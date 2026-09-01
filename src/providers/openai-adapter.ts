@@ -21,30 +21,38 @@ export class OpenAIAdapter implements ProviderAdapter {
       });
 
       if (res.status === 401) {
-        return { valid: false, state: 'INVALID_KEY', message: 'Invalid OpenAI API Key.' };
+        return { valid: false, state: 'INVALID_KEY', message: 'Invalid API Key.' };
       }
       if (res.status === 429) {
-        return { valid: false, state: 'RATE_LIMITED', message: 'OpenAI rate limit or quota exceeded.' };
+        return { valid: false, state: 'RATE_LIMITED', message: 'Rate limit or quota exceeded.' };
       }
       if (!res.ok) {
-        return { valid: false, state: 'NETWORK_ERROR', message: `OpenAI returned status ${res.status}` };
+        return { valid: false, state: 'NETWORK_ERROR', message: `Returned status ${res.status}` };
       }
 
-      const data = await res.json();
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { data: [] };
+      }
+
       const models: AIModelInfo[] = (data.data || [])
-        .filter((m: any) => m.id.includes('gpt'))
         .map((m: any) => ({
           id: m.id,
           name: m.id,
           supportsToolCalling: true,
-          supportsVision: m.id.includes('4o') || m.id.includes('vision')
+          supportsVision: true
         }));
 
       return {
         valid: true,
         state: 'VALID',
-        message: 'Successfully connected to OpenAI.',
-        availableModels: models
+        message: 'Successfully connected to AI Provider.',
+        availableModels: models.length > 0 ? models : [
+          { id: config.model || 'gpt-4o-mini', name: config.model || 'gpt-4o-mini', supportsVision: true, supportsToolCalling: true }
+        ]
       };
     } catch (err: any) {
       return {
@@ -101,7 +109,8 @@ export class OpenAIAdapter implements ProviderAdapter {
     const body: Record<string, any> = {
       model: config.model || 'gpt-4o-mini',
       messages: formattedMessages,
-      temperature: config.temperature ?? 0.2
+      temperature: config.temperature ?? 0.2,
+      stream: false // Explicitly disable stream
     };
 
     if (tools && tools.length > 0) {
@@ -119,6 +128,7 @@ export class OpenAIAdapter implements ProviderAdapter {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Accept': 'application/json',
         Authorization: `Bearer ${config.apiKey}`
       },
       body: JSON.stringify(body)
@@ -126,33 +136,98 @@ export class OpenAIAdapter implements ProviderAdapter {
 
     if (!res.ok) {
       const err = await res.text();
-      throw new Error(`OpenAI Chat error (${res.status}): ${err}`);
+      throw new Error(`AI Provider error (${res.status}): ${err}`);
     }
 
-    const data = await res.json();
-    const choice = data.choices?.[0]?.message;
+    const rawText = await res.text();
+    let text = '';
+    let toolCalls: any = undefined;
+    let usage: any = undefined;
 
-    const toolCalls = choice?.tool_calls?.map((tc: any) => {
-      let args = {};
-      try {
-        args = JSON.parse(tc.function.arguments);
-      } catch {
-        args = {};
+    // Check if response is raw SSE stream ("data: {...}") or plain JSON
+    if (rawText.trim().startsWith('data:')) {
+      const lines = rawText.split('\n');
+      const toolCallMap = new Map<number, { id: string; name: string; args: string }>();
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data:')) continue;
+        const jsonStr = trimmed.replace(/^data:\s*/, '').trim();
+        if (jsonStr === '[DONE]') break;
+
+        try {
+          const parsed = JSON.parse(jsonStr);
+          const delta = parsed.choices?.[0]?.delta;
+          if (delta?.content) {
+            text += delta.content;
+          }
+          if (delta?.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              const idx = tc.index ?? 0;
+              if (!toolCallMap.has(idx)) {
+                toolCallMap.set(idx, {
+                  id: tc.id || `call_${idx}`,
+                  name: tc.function?.name || '',
+                  args: tc.function?.arguments || ''
+                });
+              } else {
+                const existing = toolCallMap.get(idx)!;
+                if (tc.id) existing.id = tc.id;
+                if (tc.function?.name) existing.name += tc.function.name;
+                if (tc.function?.arguments) existing.args += tc.function.arguments;
+              }
+            }
+          }
+        } catch {
+          // ignore chunk parse failure
+        }
       }
-      return {
-        id: tc.id,
-        name: tc.function.name,
-        arguments: args
-      };
-    });
 
-    return {
-      text: choice?.content || '',
-      toolCalls,
-      usage: {
+      if (toolCallMap.size > 0) {
+        toolCalls = Array.from(toolCallMap.values()).map(tc => {
+          let args = {};
+          try {
+            args = JSON.parse(tc.args);
+          } catch {
+            args = {};
+          }
+          return {
+            id: tc.id,
+            name: tc.name,
+            arguments: args
+          };
+        });
+      }
+    } else {
+      // Standard JSON
+      const data = JSON.parse(rawText);
+      const choice = data.choices?.[0]?.message;
+
+      toolCalls = choice?.tool_calls?.map((tc: any) => {
+        let args = {};
+        try {
+          args = JSON.parse(tc.function.arguments);
+        } catch {
+          args = {};
+        }
+        return {
+          id: tc.id,
+          name: tc.function.name,
+          arguments: args
+        };
+      });
+
+      text = choice?.content || '';
+      usage = {
         promptTokens: data.usage?.prompt_tokens || 0,
         completionTokens: data.usage?.completion_tokens || 0
-      }
+      };
+    }
+
+    return {
+      text,
+      toolCalls,
+      usage
     };
   }
 }
