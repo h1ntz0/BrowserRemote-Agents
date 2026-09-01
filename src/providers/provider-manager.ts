@@ -3,11 +3,13 @@ import { OpenAIAdapter } from './openai-adapter';
 import { AnthropicAdapter } from './anthropic-adapter';
 import { GoogleGeminiAdapter } from './google-adapter';
 import { OpenRouterAdapter, OllamaLocalAdapter } from './local-adapters';
+import { NineRouterAdapter } from './nine-router-adapter';
 
 export class ProviderManager {
   private adapters: Map<AIProviderType, ProviderAdapter> = new Map();
 
   constructor() {
+    this.register(new NineRouterAdapter());
     this.register(new OpenAIAdapter());
     this.register(new AnthropicAdapter());
     this.register(new GoogleGeminiAdapter());

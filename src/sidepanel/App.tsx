@@ -20,10 +20,10 @@ export function SidePanelApp() {
 
   // Provider Settings
   const [providerConfig, setProviderConfig] = useState<AIProviderConfig>({
-    provider: 'openai',
-    endpoint: '',
+    provider: 'nine_router',
+    endpoint: 'https://api.9router.com/v1',
     apiKey: '',
-    model: 'gpt-4o-mini',
+    model: 'claude-3-5-sonnet-20241022',
     temperature: 0.2
   });
   const [validationState, setValidationState] = useState<{ status: string; message: string }>({
@@ -513,15 +513,46 @@ export function SidePanelApp() {
               <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">AI Provider</label>
               <select
                 value={providerConfig.provider}
-                onChange={(e) => setProviderConfig({ ...providerConfig, provider: e.target.value as any })}
+                onChange={(e) => {
+                  const p = e.target.value as any;
+                  let defaultModel = 'gpt-4o-mini';
+                  let defaultEndpoint = '';
+                  if (p === 'nine_router') {
+                    defaultModel = 'claude-3-5-sonnet-20241022';
+                    defaultEndpoint = 'https://api.9router.com/v1';
+                  } else if (p === 'anthropic') {
+                    defaultModel = 'claude-3-5-sonnet-20241022';
+                  } else if (p === 'google') {
+                    defaultModel = 'gemini-2.0-flash';
+                  } else if (p === 'openrouter') {
+                    defaultModel = 'anthropic/claude-3.5-sonnet';
+                    defaultEndpoint = 'https://openrouter.ai/api/v1';
+                  } else if (p === 'ollama') {
+                    defaultModel = 'llama3.2';
+                    defaultEndpoint = 'http://localhost:11434';
+                  }
+                  setProviderConfig({ ...providerConfig, provider: p, model: defaultModel, endpoint: defaultEndpoint });
+                }}
                 className="w-full bg-[#131B2E] border border-border rounded p-2 text-xs focus:outline-none focus:border-primary font-sans text-foreground"
               >
+                <option value="nine_router">9router (Claude 3.5, GPT-4o, Gemini)</option>
                 <option value="openai">OpenAI (GPT-4o / GPT-4o-mini)</option>
                 <option value="anthropic">Anthropic (Claude 3.5 Sonnet)</option>
                 <option value="google">Google Gemini (2.0 Flash / Pro)</option>
                 <option value="openrouter">OpenRouter (Multi-model)</option>
                 <option value="ollama">Ollama (Local LLM)</option>
               </select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">API Endpoint (Optional / Custom)</label>
+              <input
+                type="text"
+                value={providerConfig.endpoint || ''}
+                onChange={(e) => setProviderConfig({ ...providerConfig, endpoint: e.target.value })}
+                placeholder="https://api.9router.com/v1"
+                className="w-full bg-[#131B2E] border border-border rounded p-2 text-xs focus:outline-none focus:border-primary font-mono text-foreground"
+              />
             </div>
 
             <div className="space-y-1">
@@ -541,7 +572,7 @@ export function SidePanelApp() {
                 type="text"
                 value={providerConfig.model}
                 onChange={(e) => setProviderConfig({ ...providerConfig, model: e.target.value })}
-                placeholder="gpt-4o-mini"
+                placeholder="claude-3-5-sonnet-20241022"
                 className="w-full bg-[#131B2E] border border-border rounded p-2 text-xs focus:outline-none focus:border-primary font-mono text-foreground"
               />
             </div>
