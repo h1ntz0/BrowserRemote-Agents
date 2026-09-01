@@ -1,8 +1,9 @@
-// Overlay visual renderer with high contrast developer theme
+// Visual Overlay & Element Tag Marker
 export class VisualOverlayManager {
   private overlayContainer: HTMLDivElement | null = null;
   private highlightBox: HTMLDivElement | null = null;
   private badge: HTMLDivElement | null = null;
+  private tagContainer: HTMLDivElement | null = null;
 
   constructor() {
     this.init();
@@ -20,47 +21,63 @@ export class VisualOverlayManager {
       width: 100vw;
       height: 100vh;
       pointer-events: none;
-      z-index: 2147483647;
+      z-index: 2147483640;
       display: block;
+    `;
+
+    this.tagContainer = document.createElement('div');
+    this.tagContainer.id = 'bab-tags-layer';
+    this.tagContainer.style.cssText = `
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
     `;
 
     this.highlightBox = document.createElement('div');
     this.highlightBox.style.cssText = `
       position: absolute;
       border: 2px solid #3B82F6;
-      background: rgba(59, 130, 246, 0.15);
+      background: rgba(59, 130, 246, 0.18);
       border-radius: 4px;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
       display: none;
-      box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+      box-shadow: 0 0 12px rgba(59, 130, 246, 0.6);
+      pointer-events: none;
+      z-index: 2147483645;
     `;
 
     this.badge = document.createElement('div');
     this.badge.style.cssText = `
       position: fixed;
-      bottom: 20px;
-      right: 20px;
+      bottom: 24px;
+      right: 24px;
       background: #0F172A;
       border: 1px solid #334155;
       color: #F8FAFC;
       padding: 8px 14px;
-      border-radius: 6px;
+      border-radius: 8px;
       font-family: 'JetBrains Mono', monospace, sans-serif;
-      font-size: 12px;
+      font-size: 11px;
       display: flex;
       align-items: center;
       gap: 8px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-      transition: opacity 0.3s ease;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+      transition: all 0.2s ease;
+      pointer-events: none;
+      z-index: 2147483647;
     `;
     this.badge.innerHTML = `
       <span style="width: 8px; height: 8px; border-radius: 50%; background: #22C55E; display: inline-block;"></span>
       <span>Browser Agent: Ready</span>
     `;
 
+    this.overlayContainer.appendChild(this.tagContainer);
     this.overlayContainer.appendChild(this.highlightBox);
     this.overlayContainer.appendChild(this.badge);
-    document.body.appendChild(this.overlayContainer);
+    document.documentElement.appendChild(this.overlayContainer);
   }
 
   public highlight(element: HTMLElement, label?: string) {
@@ -75,8 +92,41 @@ export class VisualOverlayManager {
     if (label && this.badge) {
       this.badge.innerHTML = `
         <span style="width: 8px; height: 8px; border-radius: 50%; background: #3B82F6; display: inline-block;"></span>
-        <span>Target: ${label}</span>
+        <span>Action: ${label}</span>
       `;
+    }
+  }
+
+  public renderRefTags(elements: Array<{ ref: string; rect: DOMRect; label: string }>) {
+    if (!this.tagContainer) return;
+    this.tagContainer.innerHTML = '';
+    
+    for (const item of elements) {
+      if (item.rect.width === 0 || item.rect.height === 0) continue;
+      const tagEl = document.createElement('div');
+      tagEl.style.cssText = `
+        position: absolute;
+        top: ${item.rect.top + window.scrollY}px;
+        left: ${item.rect.left + window.scrollX}px;
+        background: #3B82F6;
+        color: #FFFFFF;
+        font-family: 'JetBrains Mono', monospace, sans-serif;
+        font-size: 9px;
+        font-weight: bold;
+        padding: 1px 4px;
+        border-radius: 3px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+        pointer-events: none;
+        z-index: 2147483644;
+      `;
+      tagEl.innerText = item.ref;
+      this.tagContainer.appendChild(tagEl);
+    }
+  }
+
+  public clearRefTags() {
+    if (this.tagContainer) {
+      this.tagContainer.innerHTML = '';
     }
   }
 

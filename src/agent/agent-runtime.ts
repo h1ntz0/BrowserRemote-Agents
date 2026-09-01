@@ -16,6 +16,7 @@ export interface AgentTaskOptions {
   onStateChange: (state: AgentState) => void;
   onPlanCreated: (plan: PlanStep[]) => void;
   onStepProgress: (step: PlanStep) => void;
+  onThought?: (thought: string) => void;
   onActionLog: (log: ActionLog) => void;
   onRequestHumanTakeover: (reason: string, details?: string) => Promise<boolean>;
   onRequestConfirmation: (tool: string, risk: RiskLevel, params: any) => Promise<boolean>;
@@ -72,7 +73,7 @@ export class AgentRuntime {
     this.isPaused = false;
     this.isCancelled = false;
 
-    const maxSteps = options.maxSteps || 15;
+    const maxSteps = options.maxSteps || 20;
     const adapter = this.providerManager.getAdapter(config.provider);
     const availableTools = this.toolRegistry.getAIToolDeclarations();
 
@@ -86,8 +87,8 @@ export class AgentRuntime {
 
     options.onStateChange('ANALYZING');
 
-    // 1. Initial page inspection and CAPTCHA detection
-    let initialDom: any = {};
+    // 1. Initial Snapshot & CAPTCHA Detection
+    let initialSnapshot: any = {};
     try {
       const captchaCheck = await options.sendMessageToTab('DETECT_CAPTCHA');
       if (captchaCheck?.hasChallenge) {
@@ -98,29 +99,68 @@ export class AgentRuntime {
           return { success: false, summary: 'User cancelled during authentication challenge.' };
         }
       }
-      initialDom = await options.sendMessageToTab('INSPECT_DOM', { maxDepth: 3 });
+      initialSnapshot = await options.sendMessageToTab('SNAPSHOT', { renderVisualTags: true });
     } catch (e: any) {
-      initialDom = { error: `Failed to inspect initial DOM: ${e.message}` };
+      initialSnapshot = { formattedTree: 'Page ready.', title: document.title, url: options.url };
     }
 
-    // 2. Planning phase
+    // 2. Planning phase with dual execution support (ReAct JSON + native function calling)
     options.onStateChange('PLANNING');
-    const sanitizedContext = JSON.stringify(RedactionEngine.redactObject(initialDom));
-    const systemPrompt = `You are an autonomous browser execution agent designed for the Browser Agent Bridge.
-Your goal is to fulfill the User's task accurately, step-by-step, using browser tools.
-Always explain your thought process and pick the appropriate tool.
-When the task is complete, provide a clear concise summary.`;
+    
+    const formattedTree = initialSnapshot?.formattedTree || 'No interactive tree available.';
+    const systemPrompt = `You are the autonomous execution agent for the Browser Agent Bridge extension.
+You directly control and automate the user's browser tab to accomplish their task.
 
-    // Gemini requires the initial turn to be 'user' (system message can either be top-level or first user turn)
+CURRENT AVAILABLE BROWSER TOOLS:
+- browser.click({ ref: "e1" }) -> Click element by ref (e1, e2...) or selector
+- browser.type({ ref: "e1", text: "query", pressEnter: true }) -> Type text into input
+- browser.select_option({ ref: "e1", value: "optionVal" }) -> Select from dropdown
+- browser.hover({ ref: "e1" }) -> Hover over element
+- browser.scroll({ direction: "down"|"up"|"bottom"|"top", amount: 500 }) -> Scroll page
+- browser.navigate({ url: "https://..." }) -> Go to destination URL
+- browser.snapshot({}) -> Refresh element tree and visual refs
+- browser.wait({ ms: 2000 }) -> Wait for network/UI
+- browser.evaluate_js({ code: "..." }) -> Execute JS in page
+
+RESPONSE FORMAT:
+You can call tools via native function calls OR by writing a JSON action block in your reply:
+\`\`\`json
+{
+  "thought": "I need to click the search button e3",
+  "tool": "browser.click",
+  "params": { "ref": "e3" }
+}
+\`\`\`
+When the task is complete, reply with:
+\`\`\`json
+{
+  "thought": "The task is fully accomplished.",
+  "done": true,
+  "summary": "Completed order extraction."
+}
+\`\`\`
+`;
+
+    const userInitialPrompt = `[PAGE CONTEXT]
+URL: ${options.url}
+Title: ${initialSnapshot?.title || ''}
+
+[INTERACTIVE ELEMENTS ON CURRENT VIEWPORT]
+${formattedTree}
+
+[USER TASK]
+${options.userPrompt}
+`;
+
     const messages: AIMessage[] = [
       {
         role: 'user',
-        content: PromptInjectionGuard.constructSecurePrompt(systemPrompt, options.userPrompt, sanitizedContext)
+        content: PromptInjectionGuard.constructSecurePrompt(systemPrompt, userInitialPrompt, '')
       }
     ];
 
     let currentStep = 0;
-    let completedSummary = 'Task completed successfully.';
+    let completedSummary = 'Task completed.';
     let extractedData: any = null;
 
     options.onStateChange('EXECUTING');
@@ -137,25 +177,59 @@ When the task is complete, provide a clear concise summary.`;
         return { success: false, summary: `AI Provider Error: ${err.message}` };
       }
 
-      // Check if AI completed without more tool calls
-      if (!response.toolCalls || response.toolCalls.length === 0) {
-        completedSummary = response.text || 'Task finished without further actions.';
+      if (response.text && options.onThought) {
+        options.onThought(response.text);
+      }
+
+      // 1. Check native tool calls first
+      let toolCallsToExecute: Array<{ id: string; name: string; params: any }> = [];
+
+      if (response.toolCalls && response.toolCalls.length > 0) {
+        toolCallsToExecute = response.toolCalls.map(tc => ({
+          id: tc.id,
+          name: tc.name,
+          params: tc.arguments
+        }));
+      } else if (response.text) {
+        // 2. Check JSON ReAct block in text
+        const jsonMatch = response.text.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || response.text.match(/(\{\s*"tool"[\s\S]*?\})/);
+        if (jsonMatch) {
+          try {
+            const parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+            if (parsed.done) {
+              completedSummary = parsed.summary || response.text;
+              break;
+            }
+            if (parsed.tool) {
+              toolCallsToExecute.push({
+                id: `call_${Date.now()}`,
+                name: parsed.tool,
+                params: parsed.params || {}
+              });
+            }
+          } catch {}
+        }
+      }
+
+      // If no tools requested, agent considers task done
+      if (toolCallsToExecute.length === 0) {
+        completedSummary = response.text || 'Task completed without further actions.';
         break;
       }
 
-      // Append Assistant message to conversation
+      // Append Assistant message
       messages.push({
         role: 'assistant',
         content: response.text || '',
         toolCalls: response.toolCalls
       });
 
-      // Execute all tool calls and collect all tool response messages together
-      for (const toolCall of response.toolCalls) {
+      // Execute each tool through Policy & Security Engine
+      for (const tc of toolCallsToExecute) {
         await this.checkPauseOrCancel();
 
-        const toolName = toolCall.name;
-        const toolParams = toolCall.arguments || {};
+        const toolName = tc.name;
+        const toolParams = tc.params || {};
         const startTime = Date.now();
 
         const actionLog: ActionLog = {
@@ -169,7 +243,6 @@ When the task is complete, provide a clear concise summary.`;
         };
         options.onActionLog(actionLog);
 
-        // Policy & Permission evaluation
         const evalResult = this.policyEngine.evaluateAction(options.domain, toolName, toolParams);
         actionLog.riskLevel = evalResult.riskLevel;
 
@@ -179,8 +252,8 @@ When the task is complete, provide a clear concise summary.`;
           options.onActionLog({ ...actionLog });
           messages.push({
             role: 'tool',
-            toolCallId: toolCall.id,
-            content: `ERROR: Action blocked by policy. ${evalResult.reason}`
+            toolCallId: tc.id,
+            content: `ERROR: Action blocked by policy: ${evalResult.reason}`
           });
           continue;
         }
@@ -194,7 +267,7 @@ When the task is complete, provide a clear concise summary.`;
             options.onActionLog({ ...actionLog });
             messages.push({
               role: 'tool',
-              toolCallId: toolCall.id,
+              toolCallId: tc.id,
               content: 'ERROR: Action declined by user.'
             });
             continue;
@@ -203,13 +276,12 @@ When the task is complete, provide a clear concise summary.`;
           options.onStateChange('EXECUTING');
         }
 
-        // Execute tool safely
         const toolDef = this.toolRegistry.get(toolName);
         if (!toolDef) {
           messages.push({
             role: 'tool',
-            toolCallId: toolCall.id,
-            content: `ERROR: Tool ${toolName} not registered.`
+            toolCallId: tc.id,
+            content: `ERROR: Tool '${toolName}' not found.`
           });
           continue;
         }
@@ -224,10 +296,21 @@ When the task is complete, provide a clear concise summary.`;
             extractedData = result;
           }
 
-          const redactedResult = RedactionEngine.redactObject(result);
+          // Automatically refresh DOM snapshot after mutative actions (click, type, navigate, scroll)
+          let contextualResult = result;
+          if (['browser.click', 'browser.type', 'browser.navigate', 'browser.scroll', 'browser.press_key'].includes(toolName)) {
+            await new Promise(r => setTimeout(r, 400));
+            const latestSnapshot = await options.sendMessageToTab('SNAPSHOT', { renderVisualTags: true });
+            contextualResult = {
+              actionResult: result,
+              updatedPageTree: latestSnapshot?.formattedTree || ''
+            };
+          }
+
+          const redactedResult = RedactionEngine.redactObject(contextualResult);
           messages.push({
             role: 'tool',
-            toolCallId: toolCall.id,
+            toolCallId: tc.id,
             content: JSON.stringify(redactedResult)
           });
         } catch (err: any) {
@@ -238,16 +321,17 @@ When the task is complete, provide a clear concise summary.`;
 
           messages.push({
             role: 'tool',
-            toolCallId: toolCall.id,
+            toolCallId: tc.id,
             content: `Execution error: ${err.message}`
           });
         }
       }
     }
 
-    options.onStateChange('VALIDATING');
-    options.onStateChange('COMPLETED');
+    // Clean overlay markers when task finishes
+    await options.sendMessageToTab('CLEAR_HIGHLIGHTS');
 
+    options.onStateChange('COMPLETED');
     return {
       success: true,
       summary: completedSummary,

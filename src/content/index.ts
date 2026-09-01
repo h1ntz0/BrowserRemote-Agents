@@ -2,6 +2,7 @@ import { VisualOverlayManager } from './overlay';
 
 export class ContentScriptExecutor {
   private overlay: VisualOverlayManager;
+  private refMap: Map<string, HTMLElement> = new Map();
 
   constructor() {
     this.overlay = new VisualOverlayManager();
@@ -13,7 +14,7 @@ export class ContentScriptExecutor {
       this.handleAction(message)
         .then(result => sendResponse({ status: 'SUCCESS', data: result }))
         .catch(err => sendResponse({ status: 'ERROR', error: err.message }));
-      return true; // Keep asynchronous channel open
+      return true;
     });
   }
 
@@ -22,23 +23,36 @@ export class ContentScriptExecutor {
 
     switch (action) {
       case 'INSPECT_DOM':
-        return this.inspectDom(payload.selector || 'body', payload.maxDepth || 4);
+      case 'SNAPSHOT':
+        return this.getInteractiveSnapshot(payload.renderVisualTags ?? true);
 
       case 'FIND_ELEMENT':
         return this.findElement(payload.selector, payload.textMatch);
 
       case 'CLICK':
-        return this.clickElement(payload.selector);
+        return this.clickElement(payload.ref || payload.selector);
 
       case 'TYPE':
-        return this.typeIntoElement(payload.selector, payload.text, payload.pressEnter);
+        return this.typeIntoElement(payload.ref || payload.selector, payload.text, payload.pressEnter, payload.clearFirst);
+
+      case 'SELECT_OPTION':
+        return this.selectOption(payload.ref || payload.selector, payload.value);
+
+      case 'HOVER':
+        return this.hoverElement(payload.ref || payload.selector);
+
+      case 'KEYPRESS':
+        return this.pressKey(payload.key);
 
       case 'SCROLL':
-        return this.scrollPage(payload.direction, payload.amount);
+        return this.scrollPage(payload.direction, payload.amount, payload.ref || payload.selector);
 
       case 'NAVIGATE':
         window.location.href = payload.url;
         return { navigating: true, target: payload.url };
+
+      case 'EVALUATE_JS':
+        return this.evaluateScript(payload.code);
 
       case 'WAIT':
         return this.waitMsOrSelector(payload.ms, payload.waitForSelector);
@@ -50,14 +64,13 @@ export class ContentScriptExecutor {
         return this.extractDataBySchema(payload.schema);
 
       case 'HIGHLIGHT_ELEMENT':
-        if (payload.selector) {
-          const el = document.querySelector(payload.selector) as HTMLElement;
-          if (el) this.overlay.highlight(el, payload.label);
-        }
+        const el = this.resolveElement(payload.ref || payload.selector);
+        if (el) this.overlay.highlight(el, payload.label);
         return { highlighted: true };
 
       case 'CLEAR_HIGHLIGHTS':
         this.overlay.clear();
+        this.overlay.clearRefTags();
         return { cleared: true };
 
       default:
@@ -65,54 +78,125 @@ export class ContentScriptExecutor {
     }
   }
 
-  private inspectDom(selector: string, maxDepth: number): any {
-    const root = document.querySelector(selector) || document.body;
+  private resolveElement(refOrSelector: string): HTMLElement | null {
+    if (!refOrSelector) return null;
+    if (this.refMap.has(refOrSelector)) {
+      return this.refMap.get(refOrSelector) || null;
+    }
+    return document.querySelector(refOrSelector) as HTMLElement;
+  }
 
-    const serializeNode = (el: Element, depth: number): any => {
-      if (depth > maxDepth) return null;
+  private isElementVisible(el: HTMLElement): boolean {
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.top <= window.innerHeight;
+  }
 
-      const tag = el.tagName.toLowerCase();
-      // Skip scripts, styles, svg paths
-      if (['script', 'style', 'noscript', 'meta', 'link'].includes(tag)) return null;
+  private getInteractiveSnapshot(renderVisualTags = true): {
+    title: string;
+    url: string;
+    elements: Array<{
+      ref: string;
+      tag: string;
+      type?: string;
+      name?: string;
+      text: string;
+      selector: string;
+      placeholder?: string;
+      value?: string;
+      href?: string;
+      isVisible: boolean;
+    }>;
+    formattedTree: string;
+  } {
+    this.refMap.clear();
 
-      const isInteractive = ['a', 'button', 'input', 'select', 'textarea'].includes(tag) || el.getAttribute('role') === 'button';
-      const id = el.id ? `#${el.id}` : '';
-      const className = el.className && typeof el.className === 'string' ? `.${el.className.split(' ').slice(0, 2).join('.')}` : '';
+    const query = [
+      'a[href]',
+      'button',
+      'input:not([type="hidden"])',
+      'textarea',
+      'select',
+      '[role="button"]',
+      '[role="link"]',
+      '[role="checkbox"]',
+      '[role="tab"]',
+      '[role="menuitem"]',
+      '[contenteditable="true"]',
+      'summary',
+      'h1', 'h2', 'h3',
+      '[data-clickable="true"]'
+    ].join(',');
+
+    const rawElements = Array.from(document.querySelectorAll(query)) as HTMLElement[];
+    const elements: any[] = [];
+    const treeLines: string[] = [];
+    const visualTags: Array<{ ref: string; rect: DOMRect; label: string }> = [];
+
+    let count = 1;
+    for (const el of rawElements) {
+      if (el.closest('#bab-overlay-root')) continue;
       
-      const nodeSummary: any = {
+      const isVisible = this.isElementVisible(el);
+      const tag = el.tagName.toLowerCase();
+      const ref = `e${count++}`;
+      this.refMap.set(ref, el);
+
+      const isHeading = ['h1', 'h2', 'h3'].includes(tag);
+      const isInteractive = !isHeading;
+
+      const rect = el.getBoundingClientRect();
+      const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+      const id = el.id ? `#${el.id}` : '';
+      const cls = el.className && typeof el.className === 'string' ? `.${el.className.split(' ').filter(Boolean).slice(0, 2).join('.')}` : '';
+      const selector = `${tag}${id}${cls}`;
+
+      const elInfo: any = {
+        ref,
         tag,
-        selector: `${tag}${id}${className}`,
-        interactive: isInteractive
+        text,
+        selector,
+        isVisible
       };
 
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+        elInfo.type = el.type;
+        elInfo.placeholder = el.placeholder;
+        elInfo.value = el.value;
+      } else if (el instanceof HTMLAnchorElement) {
+        elInfo.href = el.href;
+      } else if (el instanceof HTMLSelectElement) {
+        elInfo.options = Array.from(el.options).map(o => o.text);
+      }
+
+      elements.push(elInfo);
+
+      if (isVisible && isInteractive) {
+        visualTags.push({ ref, rect, label: text });
+      }
+
+      // Compact tree format line
       if (isInteractive) {
-        if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-          nodeSummary.placeholder = el.placeholder;
-          nodeSummary.name = el.name;
-          nodeSummary.type = el.type;
-        } else if (el instanceof HTMLAnchorElement) {
-          nodeSummary.href = el.href;
-          nodeSummary.text = el.innerText?.slice(0, 60);
-        } else {
-          nodeSummary.text = (el as HTMLElement).innerText?.slice(0, 60);
-        }
+        let desc = `[${ref}] <${tag}> "${text}"`;
+        if (elInfo.placeholder) desc += ` (placeholder: "${elInfo.placeholder}")`;
+        if (elInfo.value) desc += ` (val: "${elInfo.value}")`;
+        if (elInfo.type) desc += ` (type: ${elInfo.type})`;
+        treeLines.push(desc);
+      } else if (isHeading && text) {
+        treeLines.push(`### ${text}`);
       }
+    }
 
-      // Collect concise children
-      const children: any[] = [];
-      for (const child of Array.from(el.children)) {
-        const serialized = serializeNode(child, depth + 1);
-        if (serialized) children.push(serialized);
-      }
-      if (children.length > 0) nodeSummary.children = children.slice(0, 15);
-
-      return nodeSummary;
-    };
+    if (renderVisualTags) {
+      this.overlay.renderRefTags(visualTags.slice(0, 60));
+    }
 
     return {
       title: document.title,
       url: window.location.href,
-      structure: serializeNode(root, 1)
+      elements,
+      formattedTree: treeLines.slice(0, 100).join('\n')
     };
   }
 
@@ -138,50 +222,123 @@ export class ContentScriptExecutor {
     return [];
   }
 
-  private async clickElement(selector: string): Promise<any> {
-    const el = document.querySelector(selector) as HTMLElement;
-    if (!el) throw new Error(`Element not found: ${selector}`);
+  private async clickElement(refOrSelector: string): Promise<any> {
+    const el = this.resolveElement(refOrSelector);
+    if (!el) throw new Error(`Element not found: ${refOrSelector}`);
 
-    this.overlay.highlight(el, `Click ${selector}`);
+    this.overlay.highlight(el, `Click ${refOrSelector}`);
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise(r => setTimeout(r, 150));
 
-    // Simulate realistic user click events
     el.focus();
+    el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true }));
     el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
     el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
     el.click();
 
     setTimeout(() => this.overlay.clear(), 1000);
-    return { clicked: true, selector };
+    return { clicked: true, target: refOrSelector };
   }
 
-  private async typeIntoElement(selector: string, text: string, pressEnter: boolean = false): Promise<any> {
-    const el = document.querySelector(selector) as HTMLInputElement | HTMLTextAreaElement;
-    if (!el) throw new Error(`Element not found: ${selector}`);
+  private async typeIntoElement(refOrSelector: string, text: string, pressEnter: boolean = false, clearFirst: boolean = true): Promise<any> {
+    const el = this.resolveElement(refOrSelector) as HTMLInputElement | HTMLTextAreaElement;
+    if (!el) throw new Error(`Element not found: ${refOrSelector}`);
 
-    this.overlay.highlight(el, `Typing into ${selector}`);
+    this.overlay.highlight(el, `Typing into ${refOrSelector}`);
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     el.focus();
-    el.value = text;
+
+    if (clearFirst) {
+      el.value = '';
+    }
+
+    el.value = (el.value || '') + text;
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
 
     if (pressEnter) {
-      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-      el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+      
+      // If inside a form, optionally submit
+      if (el.form) {
+        el.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      }
     }
 
     setTimeout(() => this.overlay.clear(), 1000);
-    return { typed: true, length: text.length };
+    return { typed: true, target: refOrSelector, textLength: text.length };
   }
 
-  private scrollPage(direction: 'up' | 'down' | 'top' | 'bottom', amount: number = 500): any {
+  private async selectOption(refOrSelector: string, value: string): Promise<any> {
+    const el = this.resolveElement(refOrSelector) as HTMLSelectElement;
+    if (!el || !(el instanceof HTMLSelectElement)) throw new Error(`Select element not found: ${refOrSelector}`);
+
+    this.overlay.highlight(el, `Select ${value}`);
+    el.focus();
+    
+    // Find matching option by text or value
+    let matched = false;
+    for (let i = 0; i < el.options.length; i++) {
+      if (el.options[i].value === value || el.options[i].text.toLowerCase().includes(value.toLowerCase())) {
+        el.selectedIndex = i;
+        matched = true;
+        break;
+      }
+    }
+
+    if (!matched) el.value = value;
+
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return { selected: true, target: refOrSelector, value };
+  }
+
+  private async hoverElement(refOrSelector: string): Promise<any> {
+    const el = this.resolveElement(refOrSelector);
+    if (!el) throw new Error(`Element not found: ${refOrSelector}`);
+
+    this.overlay.highlight(el, `Hover ${refOrSelector}`);
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    return { hovered: true, target: refOrSelector };
+  }
+
+  private async pressKey(key: string): Promise<any> {
+    const activeEl = document.activeElement || document.body;
+    activeEl.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, bubbles: true }));
+    activeEl.dispatchEvent(new KeyboardEvent('keyup', { key, code: key, bubbles: true }));
+    return { pressedKey: key };
+  }
+
+  private scrollPage(direction: 'up' | 'down' | 'top' | 'bottom', amount: number = 500, refOrSelector?: string): any {
+    if (refOrSelector) {
+      const container = this.resolveElement(refOrSelector);
+      if (container) {
+        if (direction === 'down') container.scrollTop += amount;
+        else if (direction === 'up') container.scrollTop -= amount;
+        else if (direction === 'bottom') container.scrollTop = container.scrollHeight;
+        else if (direction === 'top') container.scrollTop = 0;
+        return { scrolledContainer: refOrSelector, scrollY: container.scrollTop };
+      }
+    }
+
     if (direction === 'top') window.scrollTo({ top: 0, behavior: 'smooth' });
     else if (direction === 'bottom') window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
     else if (direction === 'down') window.scrollBy({ top: amount, behavior: 'smooth' });
     else if (direction === 'up') window.scrollBy({ top: -amount, behavior: 'smooth' });
     return { scrolled: true, scrollY: window.scrollY };
+  }
+
+  private evaluateScript(code: string): any {
+    try {
+      const result = new Function(`"use strict"; return (${code});`)();
+      return { evaluated: true, result };
+    } catch (err: any) {
+      throw new Error(`JavaScript evaluation error: ${err.message}`);
+    }
   }
 
   private async waitMsOrSelector(ms?: number, waitForSelector?: string): Promise<any> {
@@ -198,7 +355,6 @@ export class ContentScriptExecutor {
   }
 
   private detectCaptcha(): { hasChallenge: boolean; type?: string; details?: string } {
-    // Check for common CAPTCHA / bot protection signatures
     const pageText = document.body.innerText.toLowerCase();
     const cloudflareDetected = document.querySelector('iframe[src*="challenges.cloudflare.com"]') || pageText.includes('verifying you are human') || pageText.includes('checking your browser');
     const recaptchaDetected = document.querySelector('.g-recaptcha, iframe[src*="google.com/recaptcha"]');
@@ -257,7 +413,6 @@ export class ContentScriptExecutor {
   }
 }
 
-// Instantiate on content script load
 if (typeof window !== 'undefined') {
-  new ContentScriptExecutor();
+  (window as any).__BAB_EXECUTOR__ = new ContentScriptExecutor();
 }

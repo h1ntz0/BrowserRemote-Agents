@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Play, Pause, Square, Shield, Settings as SettingsIcon, 
   Download, Terminal, RefreshCw, CheckCircle2, AlertTriangle, 
-  Globe, Layers, AlertCircle, Database, HelpCircle, BookOpen, Key, ExternalLink, Check, Copy
+  Globe, Layers, AlertCircle, Database, BookOpen, Sparkles, MessageSquare, ArrowRight
 } from 'lucide-react';
 import { AIProviderConfig, AIModelInfo } from '@/providers/types';
 import { AgentState, ActionLog, RiskLevel, ExtractionSchema } from '@/protocol/types';
@@ -15,7 +15,6 @@ import { ScrapingEngine, ValidationReport } from '@/scraper/scraping-engine';
 import { ExportEngine } from '@/export/export-engine';
 
 export function SidePanelApp() {
-  // Navigation tabs
   const [activeTab, setActiveTab] = useState<'agent' | 'extract' | 'audit' | 'settings' | 'guide'>('agent');
 
   // Provider Settings
@@ -36,9 +35,11 @@ export function SidePanelApp() {
   const [taskPrompt, setTaskPrompt] = useState('');
   const [agentState, setAgentState] = useState<AgentState>('IDLE');
   const [actionLogs, setActionLogs] = useState<ActionLog[]>([]);
-  const [currentUrl, setCurrentUrl] = useState('https://example.com/orders');
+  const [currentThoughts, setCurrentThoughts] = useState<string[]>([]);
+  const [currentUrl, setCurrentUrl] = useState('https://example.com');
   const [currentDomain, setCurrentDomain] = useState('example.com');
   const [currentTabId, setCurrentTabId] = useState<number | null>(null);
+  const [lastError, setLastError] = useState<string | null>(null);
 
   // Human Takeover & Confirmations Modal
   const [takeoverModal, setTakeoverModal] = useState<{
@@ -62,10 +63,8 @@ export function SidePanelApp() {
   const [validationReport, setValidationReport] = useState<ValidationReport | null>(null);
   const [isExtracting, setIsExtracting] = useState(false);
 
-  // Runtime references
+  // Runtime reference
   const [runtime, setRuntime] = useState<AgentRuntime | null>(null);
-
-  const [lastError, setLastError] = useState<string | null>(null);
 
   // Initialize runtime & tab listeners
   useEffect(() => {
@@ -94,13 +93,11 @@ export function SidePanelApp() {
 
     updateActiveTabInfo();
 
-    // Listen to tab activation/updates
     if (typeof chrome !== 'undefined' && chrome.tabs) {
       chrome.tabs.onActivated?.addListener(updateActiveTabInfo);
       chrome.tabs.onUpdated?.addListener(updateActiveTabInfo);
     }
 
-    // Load saved settings
     if (typeof chrome !== 'undefined' && chrome.storage) {
       chrome.storage.local.get(['providerConfig'], (res) => {
         if (res.providerConfig) setProviderConfig(res.providerConfig);
@@ -108,10 +105,8 @@ export function SidePanelApp() {
     }
   }, []);
 
-  // Send message to active tab with automatic script injection if needed
   const sendMessageToTab = async (action: string, payload?: any) => {
     if (typeof chrome !== 'undefined' && chrome.tabs) {
-      // Refresh current tab ID if missing
       let targetTabId = currentTabId;
       if (!targetTabId) {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -122,46 +117,40 @@ export function SidePanelApp() {
       }
 
       if (targetTabId) {
-        try {
-          return await new Promise((resolve, reject) => {
-            chrome.tabs.sendMessage(targetTabId!, { action, payload }, async (res) => {
-              if (chrome.runtime.lastError) {
-                // If content script was not yet injected into this tab, inject it on the fly
-                try {
-                  await chrome.scripting.executeScript({
-                    target: { tabId: targetTabId! },
-                    files: ['content.js']
-                  });
-                  // Retry message after injection
-                  chrome.tabs.sendMessage(targetTabId!, { action, payload }, (retryRes) => {
-                    if (chrome.runtime.lastError) {
-                      reject(new Error(chrome.runtime.lastError.message));
-                    } else if (retryRes?.status === 'ERROR') {
-                      reject(new Error(retryRes.error));
-                    } else {
-                      resolve(retryRes?.data);
-                    }
-                  });
-                } catch (injErr: any) {
-                  reject(new Error(`Failed to inject into tab: ${injErr.message}`));
-                }
-              } else if (res?.status === 'ERROR') {
-                reject(new Error(res.error));
-              } else {
-                resolve(res?.data);
+        return new Promise((resolve, reject) => {
+          chrome.tabs.sendMessage(targetTabId!, { action, payload }, async (res) => {
+            if (chrome.runtime.lastError) {
+              try {
+                await chrome.scripting.executeScript({
+                  target: { tabId: targetTabId! },
+                  files: ['content.js']
+                });
+                chrome.tabs.sendMessage(targetTabId!, { action, payload }, (retryRes) => {
+                  if (chrome.runtime.lastError) {
+                    reject(new Error(chrome.runtime.lastError.message));
+                  } else if (retryRes?.status === 'ERROR') {
+                    reject(new Error(retryRes.error));
+                  } else {
+                    resolve(retryRes?.data);
+                  }
+                });
+              } catch (injErr: any) {
+                reject(new Error(`Content script error: ${injErr.message}`));
               }
-            });
+            } else if (res?.status === 'ERROR') {
+              reject(new Error(res.error));
+            } else {
+              resolve(res?.data);
+            }
           });
-        } catch (e: any) {
-          throw e;
-        }
+        });
       }
     }
     return { simulated: true, action, payload };
   };
 
   const testProviderConnection = async () => {
-    setValidationState({ status: 'VALIDATING', message: 'Testing connection to provider...' });
+    setValidationState({ status: 'VALIDATING', message: 'Testing connection...' });
     const pm = new ProviderManager();
     const res = await pm.validateConfig(providerConfig);
     if (res.valid) {
@@ -179,6 +168,8 @@ export function SidePanelApp() {
     if (!taskPrompt.trim() || !runtime) return;
 
     setActionLogs([]);
+    setCurrentThoughts([]);
+    setLastError(null);
     const taskId = `task_${Date.now()}`;
 
     try {
@@ -191,6 +182,7 @@ export function SidePanelApp() {
         onStateChange: (state) => setAgentState(state),
         onPlanCreated: () => {},
         onStepProgress: () => {},
+        onThought: (t) => setCurrentThoughts((prev) => [...prev, t]),
         onActionLog: (log) => setActionLogs((prev) => [log, ...prev]),
         onRequestHumanTakeover: (reason, details) => {
           return new Promise<boolean>((resolve) => {
@@ -224,7 +216,7 @@ export function SidePanelApp() {
       }
     } catch (err: any) {
       setAgentState('FAILED');
-      setLastError(err.message || 'Unknown error occurred');
+      setLastError(err.message || 'Unknown error');
     }
   };
 
@@ -242,13 +234,7 @@ export function SidePanelApp() {
 
     try {
       const records = await sendMessageToTab('EXTRACT_DATA', { schema: extractionSchema }) as any[];
-      const data = Array.isArray(records) && records.length > 0 ? records : [
-        { title: 'Logitech MX Master 3S', price: 99.99, rating: '4.8', url: 'https://store.example.com/mx3s' },
-        { title: 'Keychron Q1 Pro', price: 199.00, rating: '4.9', url: 'https://store.example.com/q1pro' },
-        { title: 'Dell UltraSharp 27 4K', price: 449.99, rating: '4.7', url: 'https://store.example.com/u27' },
-        { title: 'Sony WH-1000XM5', price: 349.99, rating: '4.6', url: 'https://store.example.com/xm5' }
-      ];
-
+      const data = Array.isArray(records) && records.length > 0 ? records : [];
       setExtractedData(data);
       const report = ScrapingEngine.validateDataset(data, extractionSchema, 1, 850);
       setValidationReport(report);
@@ -270,6 +256,13 @@ export function SidePanelApp() {
     ExportEngine.downloadBlob(blob, `browser-agent-export-${currentDomain}.zip`);
   };
 
+  const shortcuts = [
+    "Cari dan klik tombol login di halaman ini",
+    "Isi form username dan password dengan dummy data lalu submit",
+    "Scroll ke bawah dan kumpulkan semua link yang ada",
+    "Buka menu navigasi utama dan klik menu pertama"
+  ];
+
   return (
     <div className="flex flex-col h-screen max-w-xl mx-auto w-full bg-background text-foreground font-sans select-none border-x border-border shadow-2xl">
       {/* Top Header */}
@@ -280,7 +273,7 @@ export function SidePanelApp() {
           </div>
           <div>
             <h1 className="font-semibold text-xs tracking-wider uppercase">Browser Agent Bridge</h1>
-            <p className="text-[10px] text-muted-foreground font-mono">Secure AI Execution Layer</p>
+            <p className="text-[10px] text-muted-foreground font-mono">Autonomous Execution Layer</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -355,24 +348,49 @@ export function SidePanelApp() {
         {activeTab === 'agent' && (
           <div className="space-y-3">
             <div className="space-y-1">
-              <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Task Prompt</label>
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Autonomous Task Prompt</label>
+                <button
+                  onClick={() => sendMessageToTab('SNAPSHOT', { renderVisualTags: true })}
+                  className="text-[10px] text-primary hover:underline flex items-center gap-1"
+                >
+                  <Sparkles className="w-3 h-3" /> Refresh Visual Tags
+                </button>
+              </div>
               <textarea
                 value={taskPrompt}
                 onChange={(e) => setTaskPrompt(e.target.value)}
-                placeholder="e.g. Inspect the orders table, extract all pending orders, and export results."
+                placeholder="Contoh: Klik tombol login e2, masukkan email di e4, lalu submit form."
                 rows={3}
                 className="w-full bg-[#131B2E] border border-border rounded p-2 text-xs focus:outline-none focus:border-primary font-sans resize-none text-foreground"
               />
             </div>
 
+            {/* Quick Prompt Suggestions */}
+            <div className="space-y-1">
+              <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Quick Automation Prompts</span>
+              <div className="grid grid-cols-1 gap-1">
+                {shortcuts.map((sc, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setTaskPrompt(sc)}
+                    className="text-left text-[11px] p-1.5 rounded bg-card/60 hover:bg-card border border-border/80 text-muted-foreground hover:text-foreground flex items-center justify-between gap-1 transition-colors cursor-pointer"
+                  >
+                    <span className="truncate">{sc}</span>
+                    <ArrowRight className="w-3 h-3 flex-shrink-0 text-primary opacity-60" />
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Action Buttons */}
-            <div className="flex gap-2">
+            <div className="flex gap-2 pt-1">
               <button
                 onClick={handleStartTask}
                 disabled={agentState === 'EXECUTING'}
                 className="flex-1 bg-primary hover:bg-primary-hover disabled:opacity-50 text-white text-xs font-semibold py-2 px-3 rounded flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
               >
-                <Play className="w-3.5 h-3.5" /> Run Task
+                <Play className="w-3.5 h-3.5" /> Start Full Automation
               </button>
               {agentState === 'EXECUTING' && (
                 <button
@@ -419,19 +437,19 @@ export function SidePanelApp() {
               </div>
             )}
 
-            {/* Recent Live Actions */}
-            <div className="space-y-1.5 pt-2">
+            {/* Realtime Live Actions */}
+            <div className="space-y-1.5 pt-1">
               <div className="flex items-center justify-between text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
-                <span>Recent Actions</span>
+                <span>Executed Actions</span>
                 <span className="font-mono">{actionLogs.length} events</span>
               </div>
-              <div className="space-y-1 max-h-56 overflow-y-auto">
+              <div className="space-y-1 max-h-52 overflow-y-auto">
                 {actionLogs.length === 0 ? (
-                  <div className="text-center py-6 text-xs text-muted-foreground border border-dashed border-border rounded bg-card/30">
-                    No actions executed yet. Type a task prompt and press "Run Task".
+                  <div className="text-center py-5 text-xs text-muted-foreground border border-dashed border-border rounded bg-card/30">
+                    No actions executed yet. Type an automation prompt and press "Start Full Automation".
                   </div>
                 ) : (
-                  actionLogs.slice(0, 8).map((log) => (
+                  actionLogs.slice(0, 10).map((log) => (
                     <div key={log.id} className="p-2 rounded bg-card border border-border text-xs flex items-center justify-between">
                       <div className="flex items-center gap-2 truncate">
                         <span className={`w-1.5 h-1.5 rounded-full ${
@@ -439,7 +457,8 @@ export function SidePanelApp() {
                           log.status === 'FAILED' ? 'bg-destructive' :
                           log.status === 'BLOCKED' ? 'bg-warning' : 'bg-primary'
                         }`} />
-                        <span className="font-mono text-[11px] text-foreground">{log.tool}</span>
+                        <span className="font-mono text-[11px] text-foreground font-semibold">{log.tool}</span>
+                        {log.target && <span className="text-[10px] text-muted-foreground truncate max-w-[140px]">{log.target}</span>}
                       </div>
                       <span className="text-[10px] font-mono text-muted-foreground">
                         {log.durationMs ? `${log.durationMs}ms` : log.status}
@@ -676,10 +695,10 @@ export function SidePanelApp() {
             <div className="p-3 rounded bg-card border border-border space-y-2">
               <h3 className="font-semibold text-sm text-foreground flex items-center gap-1.5">
                 <BookOpen className="w-4 h-4 text-primary" />
-                Panduan Penggunaan Cepat
+                Panduan Otomatisasi Mandiri
               </h3>
               <p className="text-muted-foreground text-[11px]">
-                Browser Agent Bridge menghubungkan AI Agent ke browser session Anda tanpa membocorkan cookie, password, atau session token.
+                Ekstensi ini bertindak sebagai asisten otomatisasi yang langsung mengendalikan browser seperti di CLI/OpenCode tanpa membagikan credential rahasia.
               </p>
             </div>
 
@@ -687,40 +706,30 @@ export function SidePanelApp() {
               <div className="p-2.5 rounded bg-card border border-border space-y-1">
                 <div className="font-semibold text-foreground flex items-center gap-1.5">
                   <span className="w-4 h-4 rounded-full bg-primary/20 text-primary flex items-center justify-center text-[10px] font-mono font-bold">1</span>
-                  Konfigurasi AI Provider
+                  Ketik Instruksi Bebas
                 </div>
                 <p className="text-muted-foreground text-[11px] pl-5">
-                  Buka tab <strong>Config</strong>, masukkan API Key (OpenAI, Anthropic, Gemini, OpenRouter, atau Ollama), lalu klik <strong>Test Connection</strong>.
+                  Ketik apa saja di tab <strong>Agent</strong> (contoh: "Klik tombol Tambah Produk, ketik nama Barang ABC, lalu klik Simpan").
                 </p>
               </div>
 
               <div className="p-2.5 rounded bg-card border border-border space-y-1">
                 <div className="font-semibold text-foreground flex items-center gap-1.5">
                   <span className="w-4 h-4 rounded-full bg-primary/20 text-primary flex items-center justify-center text-[10px] font-mono font-bold">2</span>
-                  Menjalankan Autonomous Agent
+                  Visual Element Tags (e1, e2...)
                 </div>
                 <p className="text-muted-foreground text-[11px] pl-5">
-                  Buka website target di browser, masukkan instruksi di tab <strong>Agent</strong> (misal: "Buka daftar pesanan dan ekstrak yang pending"), lalu tekan <strong>Run Task</strong>.
+                  Setiap elemen di halaman ditandai dengan badge kecil biru (e1, e2, dst.). AI membaca tag ini untuk mengklik atau mengisi form secara presisi.
                 </p>
               </div>
 
               <div className="p-2.5 rounded bg-card border border-border space-y-1">
                 <div className="font-semibold text-foreground flex items-center gap-1.5">
                   <span className="w-4 h-4 rounded-full bg-primary/20 text-primary flex items-center justify-center text-[10px] font-mono font-bold">3</span>
-                  Human Takeover (CAPTCHA & 2FA)
+                  Observasi Realtime
                 </div>
                 <p className="text-muted-foreground text-[11px] pl-5">
-                  Jika website memunculkan CAPTCHA atau 2FA, Agent otomatis <strong>Pause</strong>. Selesaikan di tab browser Anda, lalu klik tombol Resume.
-                </p>
-              </div>
-
-              <div className="p-2.5 rounded bg-card border border-border space-y-1">
-                <div className="font-semibold text-foreground flex items-center gap-1.5">
-                  <span className="w-4 h-4 rounded-full bg-primary/20 text-primary flex items-center justify-center text-[10px] font-mono font-bold">4</span>
-                  Scraper & Export Paket ZIP
-                </div>
-                <p className="text-muted-foreground text-[11px] pl-5">
-                  Gunakan tab <strong>Scraper</strong> untuk auto-detect schema tabel / card pada halaman, lalu download hasilnya dalam format JSON, CSV, atau satu paket ZIP utuh lengkap dengan metadata dan report validasi.
+                  Pergerakan agent, klik mouse, pengetikan, scroll, dan navigasi halaman langsung terlihat di layar dan tercatat di timeline.
                 </p>
               </div>
             </div>
