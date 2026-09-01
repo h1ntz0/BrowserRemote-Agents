@@ -111,9 +111,10 @@ Your goal is to fulfill the User's task accurately, step-by-step, using browser 
 Always explain your thought process and pick the appropriate tool.
 When the task is complete, provide a clear concise summary.`;
 
+    // Gemini requires the initial turn to be 'user' (system message can either be top-level or first user turn)
     const messages: AIMessage[] = [
       {
-        role: 'system',
+        role: 'user',
         content: PromptInjectionGuard.constructSecurePrompt(systemPrompt, options.userPrompt, sanitizedContext)
       }
     ];

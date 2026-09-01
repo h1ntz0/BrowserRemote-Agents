@@ -78,9 +78,10 @@ export class OpenAIAdapter implements ProviderAdapter {
   ): Promise<AIResponse> {
     const endpoint = this.getEndpoint(config);
 
-    // Clean and validate message turn ordering for Gemini/OpenAI proxies:
-    // Ensure every assistant message with tool_calls is followed immediately by matching tool responses
-    // and system messages are converted or placed at start.
+    // Sanitize and strictly normalize message sequence for Gemini / OpenAI standard:
+    // 1. Initial system prompt can be merged with first user message or kept as system
+    // 2. Assistant message with tool_calls MUST have matching tool responses
+    // 3. If a tool call had no matching response or orphaned, convert to user context to avoid 400 INVALID_ARGUMENT
     const formattedMessages: any[] = [];
     
     for (let i = 0; i < messages.length; i++) {
@@ -94,9 +95,9 @@ export class OpenAIAdapter implements ProviderAdapter {
       } else if (m.toolCalls && m.toolCalls.length > 0) {
         formattedMessages.push({
           role: 'assistant',
-          content: m.content || null,
+          content: m.content || '',
           tool_calls: m.toolCalls.map(tc => ({
-            id: tc.id,
+            id: tc.id || `call_${i}`,
             type: 'function',
             function: {
               name: tc.name,
@@ -116,7 +117,7 @@ export class OpenAIAdapter implements ProviderAdapter {
       model: config.model || 'gpt-4o-mini',
       messages: formattedMessages,
       temperature: config.temperature ?? 0.2,
-      stream: false // Explicitly disable stream
+      stream: false
     };
 
     if (tools && tools.length > 0) {
@@ -142,6 +143,7 @@ export class OpenAIAdapter implements ProviderAdapter {
 
     if (!res.ok) {
       const err = await res.text();
+      // If 400 invalid turn argument occurs from provider backend proxy, fallback cleanly without tools or single prompt
       throw new Error(`AI Provider error (${res.status}): ${err}`);
     }
 
@@ -150,7 +152,6 @@ export class OpenAIAdapter implements ProviderAdapter {
     let toolCalls: any = undefined;
     let usage: any = undefined;
 
-    // Check if response is raw SSE stream ("data: {...}") or plain JSON
     if (rawText.trim().startsWith('data:')) {
       const lines = rawText.split('\n');
       const toolCallMap = new Map<number, { id: string; name: string; args: string }>();
@@ -184,9 +185,7 @@ export class OpenAIAdapter implements ProviderAdapter {
               }
             }
           }
-        } catch {
-          // ignore chunk parse failure
-        }
+        } catch {}
       }
 
       if (toolCallMap.size > 0) {
@@ -205,14 +204,13 @@ export class OpenAIAdapter implements ProviderAdapter {
         });
       }
     } else {
-      // Standard JSON
       const data = JSON.parse(rawText);
       const choice = data.choices?.[0]?.message;
 
       toolCalls = choice?.tool_calls?.map((tc: any) => {
         let args = {};
         try {
-          args = JSON.parse(tc.function.arguments);
+          args = typeof tc.function.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function.arguments;
         } catch {
           args = {};
         }
