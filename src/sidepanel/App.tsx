@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { 
   Play, Pause, Square, Shield, Settings as SettingsIcon, 
   Download, Terminal, RefreshCw, CheckCircle2, AlertTriangle, 
-  Globe, Layers, AlertCircle, Database, BookOpen, Sparkles, MessageSquare, ArrowRight
+  Globe, Layers, AlertCircle, Database, BookOpen, Sparkles, 
+  ArrowRight, Compass, Bug, Zap, ExternalLink, ChevronRight, Check
 } from 'lucide-react';
 import { AIProviderConfig, AIModelInfo } from '@/providers/types';
 import { AgentState, ActionLog, RiskLevel, ExtractionSchema } from '@/protocol/types';
@@ -15,14 +16,14 @@ import { ScrapingEngine, ValidationReport } from '@/scraper/scraping-engine';
 import { ExportEngine } from '@/export/export-engine';
 
 export function SidePanelApp() {
-  const [activeTab, setActiveTab] = useState<'agent' | 'extract' | 'audit' | 'settings' | 'guide'>('agent');
+  const [activeTab, setActiveTab] = useState<'agent' | 'explorer' | 'monkey' | 'extract' | 'audit' | 'settings' | 'guide'>('agent');
 
   // Provider Settings
   const [providerConfig, setProviderConfig] = useState<AIProviderConfig>({
-    provider: 'nine_router',
-    endpoint: 'https://api.9router.com/v1',
+    provider: 'opencode_zen',
+    endpoint: 'http://localhost:20128/v1',
     apiKey: '',
-    model: 'claude-3-5-sonnet-20241022',
+    model: 'claude-3-5-sonnet',
     temperature: 0.2
   });
   const [validationState, setValidationState] = useState<{ status: string; message: string }>({
@@ -40,6 +41,14 @@ export function SidePanelApp() {
   const [currentDomain, setCurrentDomain] = useState('example.com');
   const [currentTabId, setCurrentTabId] = useState<number | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
+
+  // Explorer State
+  const [discoveredMenus, setDiscoveredMenus] = useState<Array<{ ref: string; label: string; tag: string; isSubmenu: boolean }>>([]);
+  const [isExploring, setIsExploring] = useState(false);
+
+  // Monkey Test State
+  const [monkeyResult, setMonkeyResult] = useState<{ executedSteps: number; actions: any[]; capturedErrors: string[] } | null>(null);
+  const [isMonkeyTesting, setIsMonkeyTesting] = useState(false);
 
   // Human Takeover & Confirmations Modal
   const [takeoverModal, setTakeoverModal] = useState<{
@@ -220,6 +229,31 @@ export function SidePanelApp() {
     }
   };
 
+  const handleExploreMenus = async () => {
+    setIsExploring(true);
+    try {
+      const res = await sendMessageToTab('EXPLORE_MENUS', {}) as any[];
+      setDiscoveredMenus(Array.isArray(res) ? res : []);
+    } catch (e: any) {
+      setLastError(e.message);
+    } finally {
+      setIsExploring(false);
+    }
+  };
+
+  const handleRunMonkey = async () => {
+    setIsMonkeyTesting(true);
+    setMonkeyResult(null);
+    try {
+      const res = await sendMessageToTab('RUN_MONKEY_TEST', { iterations: 20, delayMs: 200 }) as any;
+      setMonkeyResult(res);
+    } catch (e: any) {
+      setLastError(e.message);
+    } finally {
+      setIsMonkeyTesting(false);
+    }
+  };
+
   const handleProposeSchema = async () => {
     setIsExtracting(true);
     const schema = ScrapingEngine.proposeSchemaFromHtml('');
@@ -257,10 +291,10 @@ export function SidePanelApp() {
   };
 
   const shortcuts = [
-    "Cari dan klik tombol login di halaman ini",
-    "Isi form username dan password dengan dummy data lalu submit",
-    "Scroll ke bawah dan kumpulkan semua link yang ada",
-    "Buka menu navigasi utama dan klik menu pertama"
+    "Cari dan klik menu comsec di sidebar navigasi",
+    "Buka menu dashboard lalu klik sub-menu laporan",
+    "Isi form yang ada di halaman ini dengan data pengujian lalu submit",
+    "Periksa seluruh link navigasi dan laporkan jika ada halaman error"
   ];
 
   return (
@@ -269,11 +303,11 @@ export function SidePanelApp() {
       <header className="flex items-center justify-between px-3.5 py-2.5 border-b border-border bg-card">
         <div className="flex items-center gap-2">
           <div className="p-1 rounded bg-primary/10 border border-primary/20 text-primary">
-            <Globe className="w-4 h-4" />
+            <Zap className="w-4 h-4" />
           </div>
           <div>
             <h1 className="font-semibold text-xs tracking-wider uppercase">Browser Agent Bridge</h1>
-            <p className="text-[10px] text-muted-foreground font-mono">Autonomous Execution Layer</p>
+            <p className="text-[10px] text-muted-foreground font-mono">OpenCode-Powered Autonomous Browser</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -290,18 +324,34 @@ export function SidePanelApp() {
       </header>
 
       {/* Navigation Bar */}
-      <nav className="flex border-b border-border bg-[#131B2E] text-xs">
+      <nav className="flex border-b border-border bg-[#131B2E] text-xs overflow-x-auto">
         <button
           onClick={() => setActiveTab('agent')}
-          className={`flex-1 py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1.5 ${
+          className={`flex-1 min-w-[70px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
             activeTab === 'agent' ? 'border-primary text-foreground bg-card' : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
           <Terminal className="w-3.5 h-3.5 text-primary" /> Agent
         </button>
         <button
+          onClick={() => setActiveTab('explorer')}
+          className={`flex-1 min-w-[75px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
+            activeTab === 'explorer' ? 'border-primary text-foreground bg-card' : 'border-transparent text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <Compass className="w-3.5 h-3.5 text-blue-400" /> Explore
+        </button>
+        <button
+          onClick={() => setActiveTab('monkey')}
+          className={`flex-1 min-w-[75px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
+            activeTab === 'monkey' ? 'border-primary text-foreground bg-card' : 'border-transparent text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <Bug className="w-3.5 h-3.5 text-amber-400" /> Monkey
+        </button>
+        <button
           onClick={() => setActiveTab('extract')}
-          className={`flex-1 py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1.5 ${
+          className={`flex-1 min-w-[75px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
             activeTab === 'extract' ? 'border-primary text-foreground bg-card' : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
@@ -309,7 +359,7 @@ export function SidePanelApp() {
         </button>
         <button
           onClick={() => setActiveTab('audit')}
-          className={`flex-1 py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1.5 ${
+          className={`flex-1 min-w-[70px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
             activeTab === 'audit' ? 'border-primary text-foreground bg-card' : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
@@ -317,7 +367,7 @@ export function SidePanelApp() {
         </button>
         <button
           onClick={() => setActiveTab('settings')}
-          className={`flex-1 py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1.5 ${
+          className={`flex-1 min-w-[70px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
             activeTab === 'settings' ? 'border-primary text-foreground bg-card' : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
@@ -325,7 +375,7 @@ export function SidePanelApp() {
         </button>
         <button
           onClick={() => setActiveTab('guide')}
-          className={`px-3 py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
+          className={`px-2.5 py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
             activeTab === 'guide' ? 'border-primary text-foreground bg-card' : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
@@ -352,7 +402,7 @@ export function SidePanelApp() {
                 <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Autonomous Task Prompt</label>
                 <button
                   onClick={() => sendMessageToTab('SNAPSHOT', { renderVisualTags: true })}
-                  className="text-[10px] text-primary hover:underline flex items-center gap-1"
+                  className="text-[10px] text-primary hover:underline flex items-center gap-1 cursor-pointer"
                 >
                   <Sparkles className="w-3 h-3" /> Refresh Visual Tags
                 </button>
@@ -360,7 +410,7 @@ export function SidePanelApp() {
               <textarea
                 value={taskPrompt}
                 onChange={(e) => setTaskPrompt(e.target.value)}
-                placeholder="Contoh: Klik tombol login e2, masukkan email di e4, lalu submit form."
+                placeholder="Ketik apa saja, misal: Masuk ke menu comsec lalu klik sub-menu reports."
                 rows={3}
                 className="w-full bg-[#131B2E] border border-border rounded p-2 text-xs focus:outline-none focus:border-primary font-sans resize-none text-foreground"
               />
@@ -368,7 +418,7 @@ export function SidePanelApp() {
 
             {/* Quick Prompt Suggestions */}
             <div className="space-y-1">
-              <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Quick Automation Prompts</span>
+              <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Quick Automation Tasks</span>
               <div className="grid grid-cols-1 gap-1">
                 {shortcuts.map((sc, i) => (
                   <button
@@ -424,15 +474,7 @@ export function SidePanelApp() {
                 <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                 <div className="space-y-0.5 flex-1">
                   <div className="font-semibold text-[11px]">Action Failed</div>
-                  <div className="text-[10px] leading-tight break-words">{lastError}</div>
-                  {!providerConfig.apiKey && (
-                    <button
-                      onClick={() => setActiveTab('settings')}
-                      className="text-[10px] text-foreground underline font-bold mt-1 block"
-                    >
-                      → Go to Config Tab to enter API Key
-                    </button>
-                  )}
+                  <div className="text-[10px] leading-tight break-words font-mono">{lastError}</div>
                 </div>
               </div>
             )}
@@ -443,7 +485,7 @@ export function SidePanelApp() {
                 <span>Executed Actions</span>
                 <span className="font-mono">{actionLogs.length} events</span>
               </div>
-              <div className="space-y-1 max-h-52 overflow-y-auto">
+              <div className="space-y-1 max-h-48 overflow-y-auto">
                 {actionLogs.length === 0 ? (
                   <div className="text-center py-5 text-xs text-muted-foreground border border-dashed border-border rounded bg-card/30">
                     No actions executed yet. Type an automation prompt and press "Start Full Automation".
@@ -471,7 +513,104 @@ export function SidePanelApp() {
           </div>
         )}
 
-        {/* Tab 2: Scraping & Dataset */}
+        {/* Tab 2: Menu Explorer & Discovery */}
+        {activeTab === 'explorer' && (
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Discovered Menus</span>
+              <button
+                onClick={handleExploreMenus}
+                disabled={isExploring}
+                className="text-xs text-primary hover:underline flex items-center gap-1 cursor-pointer font-medium"
+              >
+                <RefreshCw className={`w-3 h-3 ${isExploring ? 'animate-spin' : ''}`} /> Scan Page Menus
+              </button>
+            </div>
+
+            {discoveredMenus.length === 0 ? (
+              <div className="text-center py-8 text-xs text-muted-foreground border border-dashed border-border rounded bg-card/30">
+                Click "Scan Page Menus" to auto-discover all sidebar, navbar, and sub-menus on current tab.
+              </div>
+            ) : (
+              <div className="space-y-1.5 max-h-96 overflow-y-auto">
+                {discoveredMenus.map((menu, i) => (
+                  <div
+                    key={i}
+                    className="p-2 rounded bg-card hover:bg-muted border border-border text-xs flex items-center justify-between transition-colors"
+                  >
+                    <div className="flex items-center gap-2 truncate">
+                      <span className="font-mono text-[10px] bg-primary/20 text-primary px-1 rounded font-bold">{menu.ref}</span>
+                      <span className={`truncate text-foreground ${menu.isSubmenu ? 'pl-2 text-muted-foreground' : 'font-medium'}`}>
+                        {menu.isSubmenu ? '↳ ' : ''}{menu.label}
+                      </span>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        await sendMessageToTab('CLICK', { ref: menu.ref });
+                      }}
+                      className="px-2 py-1 bg-primary/20 hover:bg-primary text-primary hover:text-white rounded text-[10px] font-mono transition-colors cursor-pointer"
+                    >
+                      Click
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 3: Monkey QA Stress Test */}
+        {activeTab === 'monkey' && (
+          <div className="space-y-3">
+            <div className="p-3 rounded bg-card border border-border space-y-2 text-xs">
+              <div className="flex items-center gap-2 text-amber-400 font-semibold">
+                <Bug className="w-4 h-4" />
+                <span>Automated Monkey Chaos QA Testing</span>
+              </div>
+              <p className="text-muted-foreground text-[11px]">
+                Melakukan klik cepat acak, pengisian form dummy otomatis, dan deteksi unhandled JavaScript console errors pada website target.
+              </p>
+              <button
+                onClick={handleRunMonkey}
+                disabled={isMonkeyTesting}
+                className="w-full bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-background font-bold py-2 rounded text-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5 mt-1"
+              >
+                <Zap className="w-3.5 h-3.5" />
+                {isMonkeyTesting ? 'Running 20 Chaos Iterations...' : 'Start 20x Monkey Chaos Test'}
+              </button>
+            </div>
+
+            {monkeyResult && (
+              <div className="p-3 rounded bg-card border border-border space-y-2 text-xs">
+                <div className="flex justify-between items-center border-b border-border pb-1.5 font-semibold">
+                  <span>Monkey Test Summary</span>
+                  <span className="text-accent font-mono">{monkeyResult.executedSteps} Actions Done</span>
+                </div>
+                <div className="text-[11px] space-y-1">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Console Errors:</span>
+                    <span className={`font-mono font-bold ${monkeyResult.capturedErrors.length > 0 ? 'text-destructive' : 'text-accent'}`}>
+                      {monkeyResult.capturedErrors.length} detected
+                    </span>
+                  </div>
+                </div>
+
+                {monkeyResult.capturedErrors.length > 0 && (
+                  <div className="space-y-1 pt-1">
+                    <span className="text-[10px] font-semibold text-destructive uppercase">Captured Errors:</span>
+                    <div className="p-2 rounded bg-[#131B2E] border border-destructive/30 max-h-28 overflow-y-auto space-y-1 text-[10px] font-mono text-destructive">
+                      {monkeyResult.capturedErrors.map((err, i) => (
+                        <div key={i} className="truncate">⚠️ {err}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 4: Scraping & Dataset */}
         {activeTab === 'extract' && (
           <div className="space-y-3">
             <div className="flex justify-between items-center">
@@ -555,7 +694,7 @@ export function SidePanelApp() {
           </div>
         )}
 
-        {/* Tab 3: Audit Timeline */}
+        {/* Tab 5: Audit Timeline */}
         {activeTab === 'audit' && (
           <div className="space-y-2">
             <div className="flex justify-between items-center">
@@ -596,7 +735,7 @@ export function SidePanelApp() {
           </div>
         )}
 
-        {/* Tab 4: Provider & Security Settings */}
+        {/* Tab 6: Provider & Security Settings */}
         {activeTab === 'settings' && (
           <div className="space-y-3 text-xs">
             <div className="space-y-1">
@@ -648,7 +787,7 @@ export function SidePanelApp() {
                 type="text"
                 value={providerConfig.endpoint || ''}
                 onChange={(e) => setProviderConfig({ ...providerConfig, endpoint: e.target.value })}
-                placeholder="https://api.9router.com/v1"
+                placeholder="http://localhost:20128/v1"
                 className="w-full bg-[#131B2E] border border-border rounded p-2 text-xs focus:outline-none focus:border-primary font-mono text-foreground"
               />
             </div>
@@ -670,7 +809,7 @@ export function SidePanelApp() {
                 type="text"
                 value={providerConfig.model}
                 onChange={(e) => setProviderConfig({ ...providerConfig, model: e.target.value })}
-                placeholder="claude-3-5-sonnet-20241022"
+                placeholder="claude-3-5-sonnet"
                 className="w-full bg-[#131B2E] border border-border rounded p-2 text-xs focus:outline-none focus:border-primary font-mono text-foreground"
               />
             </div>
@@ -697,7 +836,7 @@ export function SidePanelApp() {
           </div>
         )}
 
-        {/* Tab 5: User Guide & Documentation */}
+        {/* Tab 7: User Guide & Documentation */}
         {activeTab === 'guide' && (
           <div className="space-y-3 text-xs leading-relaxed">
             <div className="p-3 rounded bg-card border border-border space-y-2">
@@ -717,27 +856,27 @@ export function SidePanelApp() {
                   Ketik Instruksi Bebas
                 </div>
                 <p className="text-muted-foreground text-[11px] pl-5">
-                  Ketik apa saja di tab <strong>Agent</strong> (contoh: "Klik tombol Tambah Produk, ketik nama Barang ABC, lalu klik Simpan").
+                  Ketik apa saja di tab <strong>Agent</strong> (contoh: "Masuk ke menu comsec lalu klik sub-menu laporan").
                 </p>
               </div>
 
               <div className="p-2.5 rounded bg-card border border-border space-y-1">
                 <div className="font-semibold text-foreground flex items-center gap-1.5">
                   <span className="w-4 h-4 rounded-full bg-primary/20 text-primary flex items-center justify-center text-[10px] font-mono font-bold">2</span>
-                  Visual Element Tags (e1, e2...)
+                  Menu Explorer & Discovery
                 </div>
                 <p className="text-muted-foreground text-[11px] pl-5">
-                  Setiap elemen di halaman ditandai dengan badge kecil biru (e1, e2, dst.). AI membaca tag ini untuk mengklik atau mengisi form secara presisi.
+                  Gunakan tab <strong>Explore</strong> untuk memindai semua navigasi sidebar/navbar secara instan dalam satu klik.
                 </p>
               </div>
 
               <div className="p-2.5 rounded bg-card border border-border space-y-1">
                 <div className="font-semibold text-foreground flex items-center gap-1.5">
                   <span className="w-4 h-4 rounded-full bg-primary/20 text-primary flex items-center justify-center text-[10px] font-mono font-bold">3</span>
-                  Observasi Realtime
+                  Monkey Chaos QA Testing
                 </div>
                 <p className="text-muted-foreground text-[11px] pl-5">
-                  Pergerakan agent, klik mouse, pengetikan, scroll, dan navigasi halaman langsung terlihat di layar dan tercatat di timeline.
+                  Tab <strong>Monkey</strong> menjalankan pengujian chaos klik acak dan otomatis mendeteksi error console JS pada website target.
                 </p>
               </div>
             </div>

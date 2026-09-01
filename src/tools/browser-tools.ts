@@ -35,13 +35,46 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 2. Click Element (supports ref like "e1" or selector "#submit")
+  // 2. Explore Navigation Menus (Crawl sidebars & navbars)
+  registry.register({
+    name: 'browser.explore_menus',
+    description: 'Auto-discover all sidebar and navbar navigation menus, submenus, and action links on the current page',
+    inputSchema: z.object({}),
+    riskLevel: 'LOW',
+    requiredPermission: 'READ_PAGE',
+    requiresConfirmation: false,
+    timeoutMs: 10000,
+    execute: async (_input, ctx) => {
+      const menus = await ctx.sendMessageToTab('EXPLORE_MENUS', {});
+      return { menus: RedactionEngine.redactObject(menus) };
+    }
+  });
+
+  // 3. Monkey Chaos Test
+  registry.register({
+    name: 'browser.run_monkey_test',
+    description: 'Run automated QA monkey test (random click, type, select stress testing) to catch console errors and broken components',
+    inputSchema: z.object({
+      iterations: z.number().optional().default(15),
+      delayMs: z.number().optional().default(250)
+    }),
+    riskLevel: 'MEDIUM',
+    requiredPermission: 'INTERACT_PAGE',
+    requiresConfirmation: false,
+    timeoutMs: 45000,
+    execute: async (input, ctx) => {
+      return ctx.sendMessageToTab('RUN_MONKEY_TEST', input);
+    }
+  });
+
+  // 4. Click Element (supports ref like "e1", menu ref "m1", or text/selector)
   registry.register({
     name: 'browser.click',
-    description: 'Click an element by its ref identifier (e.g. "e1", "e2") or CSS selector',
+    description: 'Click an element by its ref identifier (e.g. "e1", "m1"), text title, or CSS selector',
     inputSchema: z.object({
       ref: z.string().optional(),
       selector: z.string().optional(),
+      reason: z.string().optional(),
       description: z.string().optional()
     }),
     riskLevel: 'MEDIUM',
@@ -53,7 +86,7 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 3. Type Text into input/textarea
+  // 5. Type Text into input/textarea
   registry.register({
     name: 'browser.type',
     description: 'Type text into an element by ref (e.g. "e1") or selector, with optional Enter submission',
@@ -73,7 +106,7 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 4. Select Dropdown Option
+  // 6. Select Dropdown Option
   registry.register({
     name: 'browser.select_option',
     description: 'Select an option in a <select> dropdown by ref and value/label',
@@ -91,7 +124,7 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 5. Hover Element
+  // 7. Hover Element
   registry.register({
     name: 'browser.hover',
     description: 'Hover mouse over an element to trigger dropdowns or tooltips',
@@ -108,7 +141,7 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 6. Press Key
+  // 8. Press Key
   registry.register({
     name: 'browser.press_key',
     description: 'Press a keyboard key (e.g. "Enter", "Escape", "Tab", "ArrowDown")',
@@ -124,7 +157,7 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 7. Scroll
+  // 9. Scroll
   registry.register({
     name: 'browser.scroll',
     description: 'Scroll window or container vertically/horizontally',
@@ -142,7 +175,7 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 8. Navigate URL
+  // 10. Navigate URL
   registry.register({
     name: 'browser.navigate',
     description: 'Navigate the current tab to a given destination URL',
@@ -158,7 +191,7 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 9. Evaluate JavaScript in page context
+  // 11. Evaluate JavaScript
   registry.register({
     name: 'browser.evaluate_js',
     description: 'Execute custom JavaScript expression on the page and get result',
@@ -174,7 +207,7 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 10. Wait
+  // 12. Wait
   registry.register({
     name: 'browser.wait',
     description: 'Pause execution for specified milliseconds or until an element appears',
@@ -191,7 +224,7 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 11. Screenshot
+  // 13. Screenshot
   registry.register({
     name: 'browser.screenshot',
     description: 'Capture screenshot of current visible viewport',
@@ -211,7 +244,7 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 12. Detect CAPTCHA
+  // 14. Detect CAPTCHA
   registry.register({
     name: 'browser.detect_captcha',
     description: 'Check if current page presents an authentication barrier, CAPTCHA, Cloudflare, or 2FA challenge',
