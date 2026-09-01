@@ -18,9 +18,9 @@
 
 ---
 
-<img src="docs/assets/sidepanel-agent.png" alt="Browser Agent Bridge Interface" width="380" />
-&nbsp;&nbsp;&nbsp;&nbsp;
-<img src="docs/assets/sidepanel-scraper.png" alt="Scraper & Dataset Validator" width="380" />
+### 🎬 Live Demo & Walkthrough
+
+<img src="docs/assets/walkthrough.gif" alt="Browser Agent Bridge Live Walkthrough" width="400" style="border-radius: 8px; border: 1px solid #334155;" />
 
 </div>
 
@@ -68,7 +68,7 @@ Standard AI web agents ask you to hand over cookies, passwords, or complete remo
 
 ---
 
-## 📸 Screenshots
+## 📸 Screenshots & Workflow
 
 <div align="center">
   <table>
@@ -167,6 +167,7 @@ BrowserRemote-Agents/
 │   ├── sidepanel/       # React + Tailwind Side Panel Interface
 │   └── tools/           # Browser Tool Registry & Action Executors
 ├── dist/                # Production extension bundle ready to load
+├── docs/assets/         # Walkthrough GIF and screenshots
 ├── tests/               # Vitest automated test suite
 ├── build.js             # Standalone clean builder
 └── package.json
