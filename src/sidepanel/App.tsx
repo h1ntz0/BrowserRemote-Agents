@@ -40,6 +40,7 @@ export function SidePanelApp() {
   const [agentState, setAgentState] = useState<AgentState>('IDLE');
   const [actionLogs, setActionLogs] = useState<ActionLog[]>([]);
   const [currentThoughts, setCurrentThoughts] = useState<string[]>([]);
+  const [agentSummary, setAgentSummary] = useState<string | null>(null);
   const [currentUrl, setCurrentUrl] = useState('https://example.com');
   const [currentDomain, setCurrentDomain] = useState('example.com');
   const [currentTabId, setCurrentTabId] = useState<number | null>(null);
@@ -188,6 +189,7 @@ export function SidePanelApp() {
 
     setActionLogs([]);
     setCurrentThoughts([]);
+    setAgentSummary(null);
     setLastError(null);
     const taskId = `task_${Date.now()}`;
 
@@ -221,6 +223,7 @@ export function SidePanelApp() {
         setLastError(result.summary || 'Task failed');
       } else {
         setLastError(null);
+        setAgentSummary(result.summary || 'Tugas selesai dieksekusi.');
       }
 
       if (result.data && Array.isArray(result.data)) {
@@ -584,6 +587,48 @@ export function SidePanelApp() {
                 <div className="space-y-0.5 flex-1">
                   <div className="font-semibold text-[11px]">Action Failed</div>
                   <div className="text-[10px] leading-tight break-words font-mono">{lastError}</div>
+                </div>
+              </div>
+            )}
+
+            {/* AI Reasoning / Live Thought Process */}
+            {currentThoughts.length > 0 && (
+              <div className="p-2.5 rounded bg-[#131B2E] border border-blue-500/30 text-xs space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] font-semibold text-blue-400">
+                  <div className="flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 animate-pulse" />
+                    <span>AI Reasoning / Internal Thoughts</span>
+                  </div>
+                  <span className="text-[10px] font-mono text-muted-foreground">{currentThoughts.length} steps</span>
+                </div>
+                <div className="max-h-36 overflow-y-auto space-y-1 text-[11px] text-foreground/90 font-mono bg-card/60 p-2 rounded border border-border/50">
+                  {currentThoughts.map((thought, idx) => (
+                    <div key={idx} className="border-b border-border/30 last:border-0 pb-1 last:pb-0">
+                      <span className="text-primary font-bold mr-1">#{idx + 1}:</span>
+                      <span>{thought}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Final AI Output / Workflow Analysis Report */}
+            {agentSummary && (
+              <div className="p-3 rounded bg-[#0D1929] border border-accent/40 text-xs space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-accent font-semibold text-[12px]">
+                    <CheckCircle className="w-4 h-4 text-accent" />
+                    <span>Hasil Analisis & Ringkasan Alur Menu</span>
+                  </div>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(agentSummary)}
+                    className="text-[10px] px-2 py-0.5 bg-accent/20 hover:bg-accent/30 text-accent rounded transition-colors"
+                  >
+                    Copy Report
+                  </button>
+                </div>
+                <div className="bg-card/80 p-2.5 rounded border border-border/80 text-[11px] leading-relaxed text-foreground whitespace-pre-wrap font-sans max-h-60 overflow-y-auto">
+                  {agentSummary}
                 </div>
               </div>
             )}

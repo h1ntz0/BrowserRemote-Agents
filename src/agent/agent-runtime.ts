@@ -116,7 +116,16 @@ You directly control and interact with the user's browser tab to accomplish thei
 2. You can click elements by ref (e1), text (e.g. "comsec"), or CSS selector.
 3. If an action mutates the page, the DOM tree will automatically refresh in the next observation.
 4. If you need to fill inputs, select options, or click buttons, call the appropriate tool.
-5. If the user asks to explore menus or test things, execute actions step-by-step.
+5. DEEP MENU & WORKFLOW EXPLORATION:
+   - When the user asks to explore a menu/page or understand its workflow ("explore menu ini", "cari tahu alurnya", etc.), do NOT stop after just 1-2 clicks!
+   - Systematically inspect the form sections, mandatory fields, lookup modals (e.g., Karyawan, Hak Akses, Cabang), buttons (e.g., Simpan, Hapus), and data tables.
+   - If a lookup modal opens (e.g. employee list), observe its structure, choose a record or close it with the close/X button (or click outside) to continue exploring other fields on the main form.
+   - Trace the complete user journey:
+     * Step 1: Input / Search Selection (e.g. NIK / Karyawan lookup)
+     * Step 2: Form Configuration (e.g. Hak Akses, Role ID, Cabang)
+     * Step 3: Action / Validation (e.g. Tambah Hak Akses, Hapus Hak Akses)
+     * Step 4: Submission / Approval (e.g. Simpan Permintaan, Approval Matrix)
+   - When done, provide a comprehensive, structured Markdown summary of the entire menu's workflow in Indonesian/English (matching user language).
 6. When done, output: {"thought": "...", "done": true, "summary": "..."}
 
 [AVAILABLE BROWSER TOOLS]
@@ -137,7 +146,7 @@ RESPONSE FORMAT:
 You can call tools via native function calls OR by writing a JSON action block:
 \`\`\`json
 {
-  "thought": "I need to open the comsec menu by clicking ref e2",
+  "thought": "I need to inspect the form fields and lookup modals step by step",
   "tool": "browser.click",
   "params": { "ref": "e2" }
 }
