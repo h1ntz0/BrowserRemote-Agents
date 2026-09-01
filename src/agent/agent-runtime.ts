@@ -218,11 +218,23 @@ ${options.userPrompt}
       }
 
       // Append Assistant message
-      messages.push({
-        role: 'assistant',
-        content: response.text || '',
-        toolCalls: response.toolCalls
-      });
+      // Ensure we format toolCalls cleanly for message history
+      if (toolCallsToExecute.length > 0) {
+        messages.push({
+          role: 'assistant',
+          content: response.text || '',
+          toolCalls: toolCallsToExecute.map(tc => ({
+            id: tc.id,
+            name: tc.name,
+            arguments: tc.params
+          }))
+        });
+      } else {
+        messages.push({
+          role: 'assistant',
+          content: response.text || ''
+        });
+      }
 
       // Execute each tool through Policy & Security Engine
       for (const tc of toolCallsToExecute) {

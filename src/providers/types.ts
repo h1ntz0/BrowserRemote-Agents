@@ -1,4 +1,4 @@
-export type AIProviderType = 'openai' | 'anthropic' | 'google' | 'openrouter' | 'ollama' | 'nine_router' | 'custom';
+export type AIProviderType = 'openai' | 'anthropic' | 'google' | 'openrouter' | 'ollama' | 'nine_router' | 'opencode_zen' | 'opencode_go' | 'custom';
 
 export interface AIModelInfo {
   id: string;

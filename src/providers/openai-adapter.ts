@@ -81,7 +81,7 @@ export class OpenAIAdapter implements ProviderAdapter {
     // Sanitize and strictly normalize message sequence for Gemini / OpenAI standard:
     // 1. Initial system prompt can be merged with first user message or kept as system
     // 2. Assistant message with tool_calls MUST have matching tool responses
-    // 3. If a tool call had no matching response or orphaned, convert to user context to avoid 400 INVALID_ARGUMENT
+    // 3. Requests cannot end with a model/assistant turn - ensure trailing turn is user/tool or sanitize
     const formattedMessages: any[] = [];
     
     for (let i = 0; i < messages.length; i++) {
@@ -95,7 +95,7 @@ export class OpenAIAdapter implements ProviderAdapter {
       } else if (m.toolCalls && m.toolCalls.length > 0) {
         formattedMessages.push({
           role: 'assistant',
-          content: m.content || '',
+          content: m.content || null,
           tool_calls: m.toolCalls.map(tc => ({
             id: tc.id || `call_${i}`,
             type: 'function',
@@ -111,6 +111,14 @@ export class OpenAIAdapter implements ProviderAdapter {
           content: m.content || ''
         });
       }
+    }
+
+    // Safety check: if last message is assistant (which triggers "Requests ending with a model turn are not supported" on Gemini), remove or append prompt
+    if (formattedMessages.length > 0 && formattedMessages[formattedMessages.length - 1].role === 'assistant') {
+      formattedMessages.push({
+        role: 'user',
+        content: 'Continue with next step or complete task.'
+      });
     }
 
     const body: Record<string, any> = {

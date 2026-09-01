@@ -607,7 +607,13 @@ export function SidePanelApp() {
                   const p = e.target.value as any;
                   let defaultModel = 'gpt-4o-mini';
                   let defaultEndpoint = '';
-                  if (p === 'nine_router') {
+                  if (p === 'opencode_zen') {
+                    defaultModel = 'claude-3-5-sonnet';
+                    defaultEndpoint = 'http://localhost:20128/v1';
+                  } else if (p === 'opencode_go') {
+                    defaultModel = 'claude-3-5-sonnet';
+                    defaultEndpoint = 'http://localhost:8080/v1';
+                  } else if (p === 'nine_router') {
                     defaultModel = 'claude-3-5-sonnet-20241022';
                     defaultEndpoint = 'https://api.9router.com/v1';
                   } else if (p === 'anthropic') {
@@ -625,6 +631,8 @@ export function SidePanelApp() {
                 }}
                 className="w-full bg-[#131B2E] border border-border rounded p-2 text-xs focus:outline-none focus:border-primary font-sans text-foreground"
               >
+                <option value="opencode_zen">OpenCode Zen (Local Port :20128)</option>
+                <option value="opencode_go">OpenCode Go (Local Port :8080)</option>
                 <option value="nine_router">9router (Claude 3.5, GPT-4o, Gemini)</option>
                 <option value="openai">OpenAI (GPT-4o / GPT-4o-mini)</option>
                 <option value="anthropic">Anthropic (Claude 3.5 Sonnet)</option>
