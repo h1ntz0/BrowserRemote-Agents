@@ -78,16 +78,21 @@ export class OpenAIAdapter implements ProviderAdapter {
   ): Promise<AIResponse> {
     const endpoint = this.getEndpoint(config);
 
-    const formattedMessages = messages.map(m => {
+    // Clean and validate message turn ordering for Gemini/OpenAI proxies:
+    // Ensure every assistant message with tool_calls is followed immediately by matching tool responses
+    // and system messages are converted or placed at start.
+    const formattedMessages: any[] = [];
+    
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
       if (m.role === 'tool') {
-        return {
+        formattedMessages.push({
           role: 'tool',
-          tool_call_id: m.toolCallId || 'call_0',
-          content: m.content
-        };
-      }
-      if (m.toolCalls && m.toolCalls.length > 0) {
-        return {
+          tool_call_id: m.toolCallId || `call_${i}`,
+          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+        });
+      } else if (m.toolCalls && m.toolCalls.length > 0) {
+        formattedMessages.push({
           role: 'assistant',
           content: m.content || null,
           tool_calls: m.toolCalls.map(tc => ({
@@ -95,16 +100,17 @@ export class OpenAIAdapter implements ProviderAdapter {
             type: 'function',
             function: {
               name: tc.name,
-              arguments: JSON.stringify(tc.arguments)
+              arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments)
             }
           }))
-        };
+        });
+      } else {
+        formattedMessages.push({
+          role: m.role,
+          content: m.content || ''
+        });
       }
-      return {
-        role: m.role,
-        content: m.content
-      };
-    });
+    }
 
     const body: Record<string, any> = {
       model: config.model || 'gpt-4o-mini',

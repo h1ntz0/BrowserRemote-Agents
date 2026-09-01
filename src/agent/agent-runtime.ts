@@ -149,7 +149,7 @@ When the task is complete, provide a clear concise summary.`;
         toolCalls: response.toolCalls
       });
 
-      // Execute each tool call through the Policy Engine
+      // Execute all tool calls and collect all tool response messages together
       for (const toolCall of response.toolCalls) {
         await this.checkPauseOrCancel();
 
