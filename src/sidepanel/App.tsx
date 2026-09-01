@@ -617,7 +617,7 @@ export function SidePanelApp() {
               <div className="p-3 rounded bg-[#0D1929] border border-accent/40 text-xs space-y-2">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5 text-accent font-semibold text-[12px]">
-                    <CheckCircle className="w-4 h-4 text-accent" />
+                    <CheckCircle2 className="w-4 h-4 text-accent" />
                     <span>Hasil Analisis & Ringkasan Alur Menu</span>
                   </div>
                   <button
