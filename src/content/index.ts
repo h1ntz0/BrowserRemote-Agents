@@ -1,28 +1,75 @@
 import { VisualOverlayManager } from './overlay';
 
+export interface ElementNode {
+  ref: string;
+  tag: string;
+  type?: string;
+  name?: string;
+  text: string;
+  value?: string;
+  placeholder?: string;
+  href?: string;
+  role?: string;
+  selector: string;
+  isVisible: boolean;
+  isClickable: boolean;
+  rect: { top: number; left: number; width: number; height: number };
+}
+
 export class ContentScriptExecutor {
   private overlay: VisualOverlayManager;
   private refMap: Map<string, HTMLElement> = new Map();
   private capturedConsoleErrors: string[] = [];
+  private capturedNetworkRequests: Array<{ url: string; method: string; status: number; timestamp: number }> = [];
   private isMonkeyRunning: boolean = false;
 
   constructor() {
     this.overlay = new VisualOverlayManager();
     this.interceptConsoleErrors();
+    this.interceptNetwork();
     this.listenToMessages();
   }
 
   private interceptConsoleErrors() {
     const origError = console.error;
     console.error = (...args: any[]) => {
-      this.capturedConsoleErrors.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '));
-      if (this.capturedConsoleErrors.length > 50) this.capturedConsoleErrors.shift();
+      const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+      this.capturedConsoleErrors.push(msg);
+      if (this.capturedConsoleErrors.length > 60) this.capturedConsoleErrors.shift();
       origError.apply(console, args);
     };
 
     window.addEventListener('error', (e) => {
       this.capturedConsoleErrors.push(`[UNHANDLED] ${e.message} at ${e.filename}:${e.lineno}`);
     });
+  }
+
+  private interceptNetwork() {
+    // Intercept fetch
+    const origFetch = window.fetch;
+    window.fetch = async (...args) => {
+      const url = typeof args[0] === 'string' ? args[0] : (args[0] as Request)?.url || '';
+      const method = (args[1]?.method || 'GET').toUpperCase();
+      try {
+        const response = await origFetch.apply(window, args);
+        this.capturedNetworkRequests.push({
+          url,
+          method,
+          status: response.status,
+          timestamp: Date.now()
+        });
+        if (this.capturedNetworkRequests.length > 50) this.capturedNetworkRequests.shift();
+        return response;
+      } catch (err) {
+        this.capturedNetworkRequests.push({
+          url,
+          method,
+          status: 0,
+          timestamp: Date.now()
+        });
+        throw err;
+      }
+    };
   }
 
   private listenToMessages() {
@@ -46,7 +93,7 @@ export class ContentScriptExecutor {
         return this.discoverNavigationMenus();
 
       case 'RUN_MONKEY_TEST':
-        return this.executeMonkeyTest(payload.iterations || 15, payload.delayMs || 300);
+        return this.executeMonkeyTest(payload.iterations || 15, payload.delayMs || 250);
 
       case 'STOP_MONKEY_TEST':
         this.isMonkeyRunning = false;
@@ -59,11 +106,14 @@ export class ContentScriptExecutor {
         this.capturedConsoleErrors = [];
         return { cleared: true };
 
+      case 'GET_NETWORK_LOGS':
+        return { requests: [...this.capturedNetworkRequests] };
+
       case 'FIND_ELEMENT':
         return this.findElement(payload.selector, payload.textMatch);
 
       case 'CLICK':
-        return this.clickElement(payload.ref || payload.selector);
+        return this.clickElement(payload.ref || payload.selector, payload.doubleClick);
 
       case 'TYPE':
         return this.typeIntoElement(payload.ref || payload.selector, payload.text, payload.pressEnter, payload.clearFirst);
@@ -71,11 +121,17 @@ export class ContentScriptExecutor {
       case 'SELECT_OPTION':
         return this.selectOption(payload.ref || payload.selector, payload.value);
 
+      case 'SET_CHECKBOX':
+        return this.setCheckbox(payload.ref || payload.selector, payload.checked);
+
       case 'HOVER':
         return this.hoverElement(payload.ref || payload.selector);
 
+      case 'DRAG_AND_DROP':
+        return this.dragAndDrop(payload.sourceRef || payload.sourceSelector, payload.targetRef || payload.targetSelector);
+
       case 'KEYPRESS':
-        return this.pressKey(payload.key);
+        return this.pressKey(payload.key, payload.modifiers);
 
       case 'SCROLL':
         return this.scrollPage(payload.direction, payload.amount, payload.ref || payload.selector);
@@ -86,6 +142,9 @@ export class ContentScriptExecutor {
 
       case 'EVALUATE_JS':
         return this.evaluateScript(payload.code);
+
+      case 'EXTRACT_TABLE':
+        return this.extractTable(payload.ref || payload.selector);
 
       case 'WAIT':
         return this.waitMsOrSelector(payload.ms, payload.waitForSelector);
@@ -113,23 +172,53 @@ export class ContentScriptExecutor {
 
   private resolveElement(refOrSelector: string): HTMLElement | null {
     if (!refOrSelector) return null;
-    if (this.refMap.has(refOrSelector)) {
-      return this.refMap.get(refOrSelector) || null;
+    const targetStr = String(refOrSelector).trim();
+
+    // 1. Check refMap direct
+    if (this.refMap.has(targetStr)) {
+      const el = this.refMap.get(targetStr);
+      if (el && document.contains(el)) return el;
     }
-    // Direct selector query
+
+    // 2. Direct selector query
     try {
-      const el = document.querySelector(refOrSelector) as HTMLElement;
+      const el = document.querySelector(targetStr) as HTMLElement;
       if (el) return el;
     } catch {}
 
-    // Fallback: match text loosely across clickable items
-    const lower = refOrSelector.toLowerCase();
-    const clickables = Array.from(document.querySelectorAll('a, button, [role="button"], span, div, li')) as HTMLElement[];
-    for (const item of clickables) {
-      if (item.innerText && item.innerText.trim().toLowerCase() === lower) {
+    // 3. Match by ID directly
+    try {
+      const byId = document.getElementById(targetStr.replace(/^#/, ''));
+      if (byId) return byId;
+    } catch {}
+
+    // 4. Fuzzy Match by aria-label, placeholder, title, or innerText
+    const lower = targetStr.toLowerCase();
+    const allInteractive = Array.from(document.querySelectorAll(
+      'a, button, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="tab"], h1, h2, h3, h4, span, div, p, label'
+    )) as HTMLElement[];
+
+    for (const item of allInteractive) {
+      if (item.closest('#bab-overlay-root')) continue;
+      const aria = item.getAttribute('aria-label')?.toLowerCase() || '';
+      const ph = item.getAttribute('placeholder')?.toLowerCase() || '';
+      const title = item.getAttribute('title')?.toLowerCase() || '';
+      const txt = item.innerText?.trim().toLowerCase() || '';
+
+      if (aria === lower || ph === lower || title === lower || txt === lower) {
         return item;
       }
     }
+
+    // Substring match
+    for (const item of allInteractive) {
+      if (item.closest('#bab-overlay-root')) continue;
+      const txt = item.innerText?.trim().toLowerCase() || '';
+      if (txt && txt.length < 50 && (txt.includes(lower) || lower.includes(txt))) {
+        return item;
+      }
+    }
+
     return null;
   }
 
@@ -138,6 +227,108 @@ export class ContentScriptExecutor {
     if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.top <= window.innerHeight;
+  }
+
+  public getInteractiveSnapshot(renderVisualTags = true): {
+    title: string;
+    url: string;
+    elements: ElementNode[];
+    formattedTree: string;
+  } {
+    this.refMap.clear();
+
+    const query = [
+      'a[href]',
+      'button',
+      'input:not([type="hidden"])',
+      'textarea',
+      'select',
+      '[role="button"]',
+      '[role="link"]',
+      '[role="checkbox"]',
+      '[role="tab"]',
+      '[role="menuitem"]',
+      '[role="combobox"]',
+      '[contenteditable="true"]',
+      'summary',
+      'h1', 'h2', 'h3', 'h4',
+      'label',
+      '[data-clickable="true"]'
+    ].join(',');
+
+    const rawElements = Array.from(document.querySelectorAll(query)) as HTMLElement[];
+    const elements: ElementNode[] = [];
+    const treeLines: string[] = [];
+    const visualTags: Array<{ ref: string; rect: DOMRect; label: string }> = [];
+
+    let count = 1;
+    for (const el of rawElements) {
+      if (el.closest('#bab-overlay-root')) continue;
+      
+      const isVisible = this.isElementVisible(el);
+      const tag = el.tagName.toLowerCase();
+      const ref = `e${count++}`;
+      this.refMap.set(ref, el);
+
+      const isHeading = ['h1', 'h2', 'h3', 'h4'].includes(tag);
+      const isClickable = !isHeading && (['a', 'button', 'select'].includes(tag) || el.getAttribute('role') === 'button' || el.onclick !== null);
+
+      const rect = el.getBoundingClientRect();
+      const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+      const id = el.id ? `#${el.id}` : '';
+      const cls = el.className && typeof el.className === 'string' ? `.${el.className.split(' ').filter(Boolean).slice(0, 2).join('.')}` : '';
+      const selector = `${tag}${id}${cls}`;
+
+      const elInfo: ElementNode = {
+        ref,
+        tag,
+        text,
+        selector,
+        role: el.getAttribute('role') || undefined,
+        isVisible,
+        isClickable,
+        rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
+      };
+
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+        elInfo.type = el.type;
+        elInfo.placeholder = el.placeholder;
+        elInfo.value = el.value;
+      } else if (el instanceof HTMLAnchorElement) {
+        elInfo.href = el.href;
+      }
+
+      elements.push(elInfo);
+
+      if (isVisible) {
+        visualTags.push({ ref, rect, label: text || tag });
+      }
+
+      // Compact representation line for LLM
+      if (!isHeading) {
+        let desc = `[${ref}] <${tag}>`;
+        if (text) desc += ` "${text}"`;
+        if (elInfo.placeholder) desc += ` [placeholder="${elInfo.placeholder}"]`;
+        if (elInfo.value) desc += ` [value="${elInfo.value}"]`;
+        if (elInfo.type) desc += ` [type="${elInfo.type}"]`;
+        if (elInfo.href) desc += ` [href="${elInfo.href}"]`;
+        if (!isVisible) desc += ` (hidden)`;
+        treeLines.push(desc);
+      } else if (text) {
+        treeLines.push(`### ${text}`);
+      }
+    }
+
+    if (renderVisualTags) {
+      this.overlay.renderRefTags(visualTags.slice(0, 90));
+    }
+
+    return {
+      title: document.title,
+      url: window.location.href,
+      elements,
+      formattedTree: treeLines.slice(0, 150).join('\n')
+    };
   }
 
   public discoverNavigationMenus(): Array<{
@@ -161,7 +352,6 @@ export class ContentScriptExecutor {
 
     let navElements = Array.from(document.querySelectorAll(query)) as HTMLElement[];
     if (navElements.length === 0) {
-      // Fallback: search all links with compact text
       navElements = Array.from(document.querySelectorAll('a[href], button')).filter(el => {
         const text = (el as HTMLElement).innerText?.trim();
         return text && text.length > 1 && text.length < 35;
@@ -217,13 +407,11 @@ export class ContentScriptExecutor {
     for (let i = 1; i <= iterations; i++) {
       if (!this.isMonkeyRunning) break;
 
-      // Select random interactive elements on page
       const interactives = Array.from(document.querySelectorAll(
         'button:not([disabled]), a[href], input:not([type="hidden"]), select, [role="button"]'
       )).filter(el => !el.closest('#bab-overlay-root') && this.isElementVisible(el as HTMLElement)) as HTMLElement[];
 
       if (interactives.length === 0) {
-        // Scroll around if no elements
         window.scrollBy({ top: (Math.random() > 0.5 ? 300 : -300), behavior: 'smooth' });
         await new Promise(r => setTimeout(r, delayMs));
         continue;
@@ -271,112 +459,6 @@ export class ContentScriptExecutor {
     };
   }
 
-  private getInteractiveSnapshot(renderVisualTags = true): {
-    title: string;
-    url: string;
-    elements: Array<{
-      ref: string;
-      tag: string;
-      type?: string;
-      name?: string;
-      text: string;
-      selector: string;
-      placeholder?: string;
-      value?: string;
-      href?: string;
-      isVisible: boolean;
-    }>;
-    formattedTree: string;
-  } {
-    this.refMap.clear();
-
-    const query = [
-      'a[href]',
-      'button',
-      'input:not([type="hidden"])',
-      'textarea',
-      'select',
-      '[role="button"]',
-      '[role="link"]',
-      '[role="checkbox"]',
-      '[role="tab"]',
-      '[role="menuitem"]',
-      '[contenteditable="true"]',
-      'summary',
-      'h1', 'h2', 'h3',
-      '[data-clickable="true"]'
-    ].join(',');
-
-    const rawElements = Array.from(document.querySelectorAll(query)) as HTMLElement[];
-    const elements: any[] = [];
-    const treeLines: string[] = [];
-    const visualTags: Array<{ ref: string; rect: DOMRect; label: string }> = [];
-
-    let count = 1;
-    for (const el of rawElements) {
-      if (el.closest('#bab-overlay-root')) continue;
-      
-      const isVisible = this.isElementVisible(el);
-      const tag = el.tagName.toLowerCase();
-      const ref = `e${count++}`;
-      this.refMap.set(ref, el);
-
-      const isHeading = ['h1', 'h2', 'h3'].includes(tag);
-      const isInteractive = !isHeading;
-
-      const rect = el.getBoundingClientRect();
-      const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim().replace(/\s+/g, ' ').slice(0, 80);
-      const id = el.id ? `#${el.id}` : '';
-      const cls = el.className && typeof el.className === 'string' ? `.${el.className.split(' ').filter(Boolean).slice(0, 2).join('.')}` : '';
-      const selector = `${tag}${id}${cls}`;
-
-      const elInfo: any = {
-        ref,
-        tag,
-        text,
-        selector,
-        isVisible
-      };
-
-      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-        elInfo.type = el.type;
-        elInfo.placeholder = el.placeholder;
-        elInfo.value = el.value;
-      } else if (el instanceof HTMLAnchorElement) {
-        elInfo.href = el.href;
-      } else if (el instanceof HTMLSelectElement) {
-        elInfo.options = Array.from(el.options).map(o => o.text);
-      }
-
-      elements.push(elInfo);
-
-      if (isVisible && isInteractive) {
-        visualTags.push({ ref, rect, label: text });
-      }
-
-      if (isInteractive) {
-        let desc = `[${ref}] <${tag}> "${text}"`;
-        if (elInfo.placeholder) desc += ` (placeholder: "${elInfo.placeholder}")`;
-        if (elInfo.value) desc += ` (val: "${elInfo.value}")`;
-        if (elInfo.type) desc += ` (type: ${elInfo.type})`;
-        treeLines.push(desc);
-      } else if (isHeading && text) {
-        treeLines.push(`### ${text}`);
-      }
-    }
-
-    if (renderVisualTags) {
-      this.overlay.renderRefTags(visualTags.slice(0, 80));
-    }
-
-    return {
-      title: document.title,
-      url: window.location.href,
-      elements,
-      formattedTree: treeLines.slice(0, 150).join('\n')
-    };
-  }
-
   private findElement(selector?: string, textMatch?: string): any {
     if (selector) {
       const elements = Array.from(document.querySelectorAll(selector)).slice(0, 10);
@@ -399,11 +481,11 @@ export class ContentScriptExecutor {
     return [];
   }
 
-  private async clickElement(refOrSelector: string): Promise<any> {
+  private async clickElement(refOrSelector: string, doubleClick = false): Promise<any> {
     const el = this.resolveElement(refOrSelector);
-    if (!el) throw new Error(`Element not found: ${refOrSelector}`);
+    if (!el) throw new Error(`Element not found: "${refOrSelector}"`);
 
-    this.overlay.highlight(el, `Click ${refOrSelector}`);
+    this.overlay.highlight(el, `${doubleClick ? 'Double Click' : 'Click'} ${refOrSelector}`);
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
     await new Promise(r => setTimeout(r, 150));
@@ -414,13 +496,18 @@ export class ContentScriptExecutor {
     el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
     el.click();
 
-    setTimeout(() => this.overlay.clear(), 1000);
+    if (doubleClick) {
+      await new Promise(r => setTimeout(r, 80));
+      el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+    }
+
+    setTimeout(() => this.overlay.clear(), 800);
     return { clicked: true, target: refOrSelector, text: el.innerText?.slice(0, 50) };
   }
 
-  private async typeIntoElement(refOrSelector: string, text: string, pressEnter: boolean = false, clearFirst: boolean = true): Promise<any> {
+  private async typeIntoElement(refOrSelector: string, text: string, pressEnter = false, clearFirst = true): Promise<any> {
     const el = this.resolveElement(refOrSelector) as HTMLInputElement | HTMLTextAreaElement;
-    if (!el) throw new Error(`Element not found: ${refOrSelector}`);
+    if (!el) throw new Error(`Input element not found: "${refOrSelector}"`);
 
     this.overlay.highlight(el, `Typing into ${refOrSelector}`);
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -443,13 +530,13 @@ export class ContentScriptExecutor {
       }
     }
 
-    setTimeout(() => this.overlay.clear(), 1000);
+    setTimeout(() => this.overlay.clear(), 800);
     return { typed: true, target: refOrSelector, textLength: text.length };
   }
 
   private async selectOption(refOrSelector: string, value: string): Promise<any> {
     const el = this.resolveElement(refOrSelector) as HTMLSelectElement;
-    if (!el || !(el instanceof HTMLSelectElement)) throw new Error(`Select element not found: ${refOrSelector}`);
+    if (!el || !(el instanceof HTMLSelectElement)) throw new Error(`Select element not found: "${refOrSelector}"`);
 
     this.overlay.highlight(el, `Select ${value}`);
     el.focus();
@@ -470,9 +557,21 @@ export class ContentScriptExecutor {
     return { selected: true, target: refOrSelector, value };
   }
 
+  private async setCheckbox(refOrSelector: string, checked: boolean): Promise<any> {
+    const el = this.resolveElement(refOrSelector) as HTMLInputElement;
+    if (!el) throw new Error(`Checkbox element not found: "${refOrSelector}"`);
+
+    this.overlay.highlight(el, `Set checked=${checked}`);
+    el.focus();
+    el.checked = checked;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return { checked: el.checked, target: refOrSelector };
+  }
+
   private async hoverElement(refOrSelector: string): Promise<any> {
     const el = this.resolveElement(refOrSelector);
-    if (!el) throw new Error(`Element not found: ${refOrSelector}`);
+    if (!el) throw new Error(`Element not found: "${refOrSelector}"`);
 
     this.overlay.highlight(el, `Hover ${refOrSelector}`);
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -481,11 +580,38 @@ export class ContentScriptExecutor {
     return { hovered: true, target: refOrSelector };
   }
 
-  private async pressKey(key: string): Promise<any> {
+  private async dragAndDrop(sourceRef: string, targetRef: string): Promise<any> {
+    const sourceEl = this.resolveElement(sourceRef);
+    const targetEl = this.resolveElement(targetRef);
+    if (!sourceEl) throw new Error(`Source drag element not found: ${sourceRef}`);
+    if (!targetEl) throw new Error(`Target drop element not found: ${targetRef}`);
+
+    this.overlay.highlight(sourceEl, `Drag -> ${targetRef}`);
+    const dt = new DataTransfer();
+
+    sourceEl.dispatchEvent(new DragEvent('dragstart', { dataTransfer: dt, bubbles: true }));
+    targetEl.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true }));
+    targetEl.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true }));
+    sourceEl.dispatchEvent(new DragEvent('dragend', { dataTransfer: dt, bubbles: true }));
+
+    return { dragged: true, from: sourceRef, to: targetRef };
+  }
+
+  private async pressKey(key: string, modifiers?: string[]): Promise<any> {
     const activeEl = document.activeElement || document.body;
-    activeEl.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, bubbles: true }));
-    activeEl.dispatchEvent(new KeyboardEvent('keyup', { key, code: key, bubbles: true }));
-    return { pressedKey: key };
+    const keyEventInit: KeyboardEventInit = {
+      key,
+      code: key,
+      bubbles: true,
+      ctrlKey: modifiers?.includes('Control') || modifiers?.includes('Ctrl'),
+      shiftKey: modifiers?.includes('Shift'),
+      altKey: modifiers?.includes('Alt'),
+      metaKey: modifiers?.includes('Meta') || modifiers?.includes('Command')
+    };
+
+    activeEl.dispatchEvent(new KeyboardEvent('keydown', keyEventInit));
+    activeEl.dispatchEvent(new KeyboardEvent('keyup', keyEventInit));
+    return { pressedKey: key, modifiers };
   }
 
   private scrollPage(direction: 'up' | 'down' | 'top' | 'bottom', amount: number = 500, refOrSelector?: string): any {
@@ -507,6 +633,34 @@ export class ContentScriptExecutor {
     return { scrolled: true, scrollY: window.scrollY };
   }
 
+  private extractTable(refOrSelector?: string): any {
+    const table = (refOrSelector ? this.resolveElement(refOrSelector) : document.querySelector('table')) as HTMLTableElement;
+    if (!table || table.tagName.toLowerCase() !== 'table') {
+      throw new Error(`Table not found for selector: ${refOrSelector || 'table'}`);
+    }
+
+    const headers: string[] = [];
+    table.querySelectorAll('thead th, tr:first-child th, tr:first-child td').forEach(th => {
+      headers.push((th as HTMLElement).innerText.trim() || `col_${headers.length + 1}`);
+    });
+
+    const rows: Record<string, string>[] = [];
+    const trs = Array.from(table.querySelectorAll('tbody tr, tr')).slice(headers.length > 0 ? 1 : 0);
+
+    for (const tr of trs) {
+      const cells = Array.from(tr.querySelectorAll('td, th'));
+      if (cells.length === 0) continue;
+      const rowData: Record<string, string> = {};
+      cells.forEach((cell, idx) => {
+        const headerKey = headers[idx] || `col_${idx + 1}`;
+        rowData[headerKey] = (cell as HTMLElement).innerText.trim();
+      });
+      rows.push(rowData);
+    }
+
+    return { totalRows: rows.length, headers, rows };
+  }
+
   private evaluateScript(code: string): any {
     try {
       const result = new Function(`"use strict"; return (${code});`)();
@@ -520,7 +674,7 @@ export class ContentScriptExecutor {
     if (waitForSelector) {
       const startTime = Date.now();
       while (Date.now() - startTime < (ms || 10000)) {
-        if (document.querySelector(waitForSelector)) return { found: true, selector: waitForSelector };
+        if (this.resolveElement(waitForSelector)) return { found: true, selector: waitForSelector };
         await new Promise(r => setTimeout(r, 250));
       }
       throw new Error(`Timeout waiting for selector: ${waitForSelector}`);

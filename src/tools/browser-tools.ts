@@ -3,7 +3,7 @@ import { ToolRegistry } from './registry';
 import { RedactionEngine } from '@/security/redaction';
 
 export function registerDefaultBrowserTools(registry: ToolRegistry): void {
-  // 1. Snapshot / DOM Inspection with Elements & Refs
+  // 1. Snapshot / Accessibility Tree
   registry.register({
     name: 'browser.snapshot',
     description: 'Get an accessibility snapshot and interactive tree of all clickable/form elements with refs (e1, e2...) on the page',
@@ -20,10 +20,10 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // Alias for backward compatibility
+  // Alias
   registry.register({
     name: 'browser.inspect_dom',
-    description: 'Inspect the DOM and element tree',
+    description: 'Inspect the DOM structure and element tree',
     inputSchema: z.object({}),
     riskLevel: 'LOW',
     requiredPermission: 'READ_PAGE',
@@ -35,45 +35,14 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 2. Explore Navigation Menus (Crawl sidebars & navbars)
-  registry.register({
-    name: 'browser.explore_menus',
-    description: 'Auto-discover all sidebar and navbar navigation menus, submenus, and action links on the current page',
-    inputSchema: z.object({}),
-    riskLevel: 'LOW',
-    requiredPermission: 'READ_PAGE',
-    requiresConfirmation: false,
-    timeoutMs: 10000,
-    execute: async (_input, ctx) => {
-      const menus = await ctx.sendMessageToTab('EXPLORE_MENUS', {});
-      return { menus: RedactionEngine.redactObject(menus) };
-    }
-  });
-
-  // 3. Monkey Chaos Test
-  registry.register({
-    name: 'browser.run_monkey_test',
-    description: 'Run automated QA monkey test (random click, type, select stress testing) to catch console errors and broken components',
-    inputSchema: z.object({
-      iterations: z.number().optional().default(15),
-      delayMs: z.number().optional().default(250)
-    }),
-    riskLevel: 'MEDIUM',
-    requiredPermission: 'INTERACT_PAGE',
-    requiresConfirmation: false,
-    timeoutMs: 45000,
-    execute: async (input, ctx) => {
-      return ctx.sendMessageToTab('RUN_MONKEY_TEST', input);
-    }
-  });
-
-  // 4. Click Element (supports ref like "e1", menu ref "m1", or text/selector)
+  // 2. Click Element
   registry.register({
     name: 'browser.click',
-    description: 'Click an element by its ref identifier (e.g. "e1", "m1"), text title, or CSS selector',
+    description: 'Click an element by its ref (e.g. "e1", "m2"), fuzzy text (e.g. "comsec"), or selector',
     inputSchema: z.object({
       ref: z.string().optional(),
       selector: z.string().optional(),
+      doubleClick: z.boolean().optional().default(false),
       reason: z.string().optional(),
       description: z.string().optional()
     }),
@@ -86,10 +55,10 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 5. Type Text into input/textarea
+  // 3. Type Text
   registry.register({
     name: 'browser.type',
-    description: 'Type text into an element by ref (e.g. "e1") or selector, with optional Enter submission',
+    description: 'Type text into an input field or textarea by ref or selector',
     inputSchema: z.object({
       ref: z.string().optional(),
       selector: z.string().optional(),
@@ -106,7 +75,7 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 6. Select Dropdown Option
+  // 4. Select Dropdown Option
   registry.register({
     name: 'browser.select_option',
     description: 'Select an option in a <select> dropdown by ref and value/label',
@@ -124,7 +93,25 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 7. Hover Element
+  // 5. Set Checkbox State
+  registry.register({
+    name: 'browser.set_checkbox',
+    description: 'Check or uncheck a checkbox element',
+    inputSchema: z.object({
+      ref: z.string().optional(),
+      selector: z.string().optional(),
+      checked: z.boolean()
+    }),
+    riskLevel: 'LOW',
+    requiredPermission: 'INTERACT_PAGE',
+    requiresConfirmation: false,
+    timeoutMs: 5000,
+    execute: async (input, ctx) => {
+      return ctx.sendMessageToTab('SET_CHECKBOX', input);
+    }
+  });
+
+  // 6. Hover Element
   registry.register({
     name: 'browser.hover',
     description: 'Hover mouse over an element to trigger dropdowns or tooltips',
@@ -141,12 +128,30 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 8. Press Key
+  // 7. Drag & Drop
+  registry.register({
+    name: 'browser.drag_and_drop',
+    description: 'Drag one element and drop it onto another element',
+    inputSchema: z.object({
+      sourceRef: z.string(),
+      targetRef: z.string()
+    }),
+    riskLevel: 'MEDIUM',
+    requiredPermission: 'INTERACT_PAGE',
+    requiresConfirmation: false,
+    timeoutMs: 8000,
+    execute: async (input, ctx) => {
+      return ctx.sendMessageToTab('DRAG_AND_DROP', input);
+    }
+  });
+
+  // 8. Press Key with Modifiers
   registry.register({
     name: 'browser.press_key',
-    description: 'Press a keyboard key (e.g. "Enter", "Escape", "Tab", "ArrowDown")',
+    description: 'Press a keyboard key or key combination (e.g. "Enter", "Escape", modifiers: ["Control", "Shift"])',
     inputSchema: z.object({
-      key: z.string()
+      key: z.string(),
+      modifiers: z.array(z.string()).optional()
     }),
     riskLevel: 'LOW',
     requiredPermission: 'INTERACT_PAGE',
@@ -160,7 +165,7 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
   // 9. Scroll
   registry.register({
     name: 'browser.scroll',
-    description: 'Scroll window or container vertically/horizontally',
+    description: 'Scroll window or specific container vertically/horizontally',
     inputSchema: z.object({
       direction: z.enum(['up', 'down', 'top', 'bottom']),
       amount: z.number().optional().default(500),
@@ -191,7 +196,24 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 11. Evaluate JavaScript
+  // 11. Extract Table Data
+  registry.register({
+    name: 'browser.extract_table',
+    description: 'Extract structured rows and column headers from an HTML table',
+    inputSchema: z.object({
+      ref: z.string().optional(),
+      selector: z.string().optional()
+    }),
+    riskLevel: 'LOW',
+    requiredPermission: 'DATA_EXPORT',
+    requiresConfirmation: false,
+    timeoutMs: 10000,
+    execute: async (input, ctx) => {
+      return ctx.sendMessageToTab('EXTRACT_TABLE', input);
+    }
+  });
+
+  // 12. Evaluate JavaScript
   registry.register({
     name: 'browser.evaluate_js',
     description: 'Execute custom JavaScript expression on the page and get result',
@@ -207,7 +229,55 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 12. Wait
+  // 13. Monitor Network & Console
+  registry.register({
+    name: 'browser.get_logs',
+    description: 'Retrieve captured unhandled JavaScript errors and recent network requests from the current page',
+    inputSchema: z.object({}),
+    riskLevel: 'LOW',
+    requiredPermission: 'READ_PAGE',
+    requiresConfirmation: false,
+    timeoutMs: 5000,
+    execute: async (_input, ctx) => {
+      const logs = await ctx.sendMessageToTab('GET_CONSOLE_LOGS', {});
+      const net = await ctx.sendMessageToTab('GET_NETWORK_LOGS', {});
+      return { consoleErrors: logs?.errors || [], networkRequests: net?.requests || [] };
+    }
+  });
+
+  // 14. Explore Navigation Menus
+  registry.register({
+    name: 'browser.explore_menus',
+    description: 'Auto-discover all sidebar and navbar navigation menus, submenus, and action links on the current page',
+    inputSchema: z.object({}),
+    riskLevel: 'LOW',
+    requiredPermission: 'READ_PAGE',
+    requiresConfirmation: false,
+    timeoutMs: 10000,
+    execute: async (_input, ctx) => {
+      const menus = await ctx.sendMessageToTab('EXPLORE_MENUS', {});
+      return { menus: RedactionEngine.redactObject(menus) };
+    }
+  });
+
+  // 15. Monkey Chaos Test
+  registry.register({
+    name: 'browser.run_monkey_test',
+    description: 'Run automated QA monkey test (random click, type, select stress testing) to catch console errors and broken components',
+    inputSchema: z.object({
+      iterations: z.number().optional().default(15),
+      delayMs: z.number().optional().default(250)
+    }),
+    riskLevel: 'MEDIUM',
+    requiredPermission: 'INTERACT_PAGE',
+    requiresConfirmation: false,
+    timeoutMs: 45000,
+    execute: async (input, ctx) => {
+      return ctx.sendMessageToTab('RUN_MONKEY_TEST', input);
+    }
+  });
+
+  // 16. Wait
   registry.register({
     name: 'browser.wait',
     description: 'Pause execution for specified milliseconds or until an element appears',
@@ -224,7 +294,7 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 13. Screenshot
+  // 17. Screenshot
   registry.register({
     name: 'browser.screenshot',
     description: 'Capture screenshot of current visible viewport',
@@ -244,7 +314,7 @@ export function registerDefaultBrowserTools(registry: ToolRegistry): void {
     }
   });
 
-  // 14. Detect CAPTCHA
+  // 18. Detect CAPTCHA
   registry.register({
     name: 'browser.detect_captcha',
     description: 'Check if current page presents an authentication barrier, CAPTCHA, Cloudflare, or 2FA challenge',

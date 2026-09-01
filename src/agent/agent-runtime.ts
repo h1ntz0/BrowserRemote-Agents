@@ -14,8 +14,8 @@ export interface AgentTaskOptions {
   domain: string;
   maxSteps?: number;
   onStateChange: (state: AgentState) => void;
-  onPlanCreated: (plan: PlanStep[]) => void;
-  onStepProgress: (step: PlanStep) => void;
+  onPlanCreated?: (plan: PlanStep[]) => void;
+  onStepProgress?: (step: PlanStep) => void;
   onThought?: (thought: string) => void;
   onActionLog: (log: ActionLog) => void;
   onRequestHumanTakeover: (reason: string, details?: string) => Promise<boolean>;
@@ -73,7 +73,7 @@ export class AgentRuntime {
     this.isPaused = false;
     this.isCancelled = false;
 
-    const maxSteps = options.maxSteps || 20;
+    const maxSteps = options.maxSteps || 25;
     const adapter = this.providerManager.getAdapter(config.provider);
     const availableTools = this.toolRegistry.getAIToolDeclarations();
 
@@ -108,35 +108,38 @@ export class AgentRuntime {
     options.onStateChange('PLANNING');
     
     const formattedTree = initialSnapshot?.formattedTree || 'No interactive tree available.';
-    const systemPrompt = `You are the autonomous execution agent for the Browser Agent Bridge extension.
-You directly control and automate the user's browser tab to accomplish their task.
+    const systemPrompt = `You are an elite, highly capable autonomous browser execution agent.
+You directly control and interact with the user's browser tab to accomplish their instructions.
 
-CURRENT AVAILABLE BROWSER TOOLS:
-- browser.click({ ref: "e1" }) -> Click element by ref (e1, e2...) or selector
-- browser.type({ ref: "e1", text: "query", pressEnter: true }) -> Type text into input
-- browser.select_option({ ref: "e1", value: "optionVal" }) -> Select from dropdown
-- browser.hover({ ref: "e1" }) -> Hover over element
+[CORE WORKFLOW RULES]
+1. Examine the current interactive viewport elements (refs: e1, e2, etc.).
+2. You can click elements by ref (e1), text (e.g. "comsec"), or CSS selector.
+3. If an action mutates the page, the DOM tree will automatically refresh in the next observation.
+4. If you need to fill inputs, select options, or click buttons, call the appropriate tool.
+5. If the user asks to explore menus or test things, execute actions step-by-step.
+6. When done, output: {"thought": "...", "done": true, "summary": "..."}
+
+[AVAILABLE BROWSER TOOLS]
+- browser.click({ ref: "e1" }) -> Click element by ref (e1, e2...) or fuzzy text title
+- browser.type({ ref: "e2", text: "query", pressEnter: true }) -> Type text into input
+- browser.select_option({ ref: "e3", value: "optionVal" }) -> Select from dropdown
+- browser.set_checkbox({ ref: "e4", checked: true }) -> Check/uncheck
+- browser.hover({ ref: "e5" }) -> Hover over element
+- browser.drag_and_drop({ sourceRef: "e1", targetRef: "e2" }) -> Drag and drop
 - browser.scroll({ direction: "down"|"up"|"bottom"|"top", amount: 500 }) -> Scroll page
 - browser.navigate({ url: "https://..." }) -> Go to destination URL
 - browser.snapshot({}) -> Refresh element tree and visual refs
+- browser.extract_table({ ref: "e1" }) -> Extract table dataset
 - browser.wait({ ms: 2000 }) -> Wait for network/UI
 - browser.evaluate_js({ code: "..." }) -> Execute JS in page
 
 RESPONSE FORMAT:
-You can call tools via native function calls OR by writing a JSON action block in your reply:
+You can call tools via native function calls OR by writing a JSON action block:
 \`\`\`json
 {
-  "thought": "I need to click the search button e3",
+  "thought": "I need to open the comsec menu by clicking ref e2",
   "tool": "browser.click",
-  "params": { "ref": "e3" }
-}
-\`\`\`
-When the task is complete, reply with:
-\`\`\`json
-{
-  "thought": "The task is fully accomplished.",
-  "done": true,
-  "summary": "Completed order extraction."
+  "params": { "ref": "e2" }
 }
 \`\`\`
 `;
@@ -148,7 +151,7 @@ Title: ${initialSnapshot?.title || ''}
 [INTERACTIVE ELEMENTS ON CURRENT VIEWPORT]
 ${formattedTree}
 
-[USER TASK]
+[USER INSTRUCTION]
 ${options.userPrompt}
 `;
 
@@ -181,7 +184,7 @@ ${options.userPrompt}
         options.onThought(response.text);
       }
 
-      // 1. Check native tool calls first
+      // 1. Extract tool calls (native or JSON ReAct block)
       let toolCallsToExecute: Array<{ id: string; name: string; params: any }> = [];
 
       if (response.toolCalls && response.toolCalls.length > 0) {
@@ -191,7 +194,6 @@ ${options.userPrompt}
           params: tc.arguments
         }));
       } else if (response.text) {
-        // 2. Check JSON ReAct block in text
         const jsonMatch = response.text.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || response.text.match(/(\{\s*"tool"[\s\S]*?\})/);
         if (jsonMatch) {
           try {
@@ -218,7 +220,6 @@ ${options.userPrompt}
       }
 
       // Append Assistant message
-      // Ensure we format toolCalls cleanly for message history
       if (toolCallsToExecute.length > 0) {
         messages.push({
           role: 'assistant',
@@ -304,13 +305,13 @@ ${options.userPrompt}
           actionLog.durationMs = Date.now() - startTime;
           options.onActionLog({ ...actionLog });
 
-          if (toolName === 'browser.extract' || toolName === 'EXTRACT_DATA') {
+          if (toolName === 'browser.extract' || toolName === 'EXTRACT_DATA' || toolName === 'browser.extract_table') {
             extractedData = result;
           }
 
-          // Automatically refresh DOM snapshot after mutative actions (click, type, navigate, scroll)
+          // Auto-refresh snapshot after DOM-mutating actions
           let contextualResult = result;
-          if (['browser.click', 'browser.type', 'browser.navigate', 'browser.scroll', 'browser.press_key'].includes(toolName)) {
+          if (['browser.click', 'browser.type', 'browser.select_option', 'browser.navigate', 'browser.scroll', 'browser.press_key', 'browser.set_checkbox'].includes(toolName)) {
             await new Promise(r => setTimeout(r, 400));
             const latestSnapshot = await options.sendMessageToTab('SNAPSHOT', { renderVisualTags: true });
             contextualResult = {
