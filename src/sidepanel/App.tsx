@@ -65,6 +65,8 @@ export function SidePanelApp() {
   // Runtime references
   const [runtime, setRuntime] = useState<AgentRuntime | null>(null);
 
+  const [lastError, setLastError] = useState<string | null>(null);
+
   // Initialize runtime & tab listeners
   useEffect(() => {
     const tools = new ToolRegistry();
@@ -74,19 +76,28 @@ export function SidePanelApp() {
     const rt = new AgentRuntime(pm, tools, policy);
     setRuntime(rt);
 
-    // Get active Chrome tab if in extension environment
-    if (typeof chrome !== 'undefined' && chrome.tabs) {
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]) {
-          setCurrentTabId(tabs[0].id || null);
-          if (tabs[0].url) {
-            setCurrentUrl(tabs[0].url);
-            try {
-              setCurrentDomain(new URL(tabs[0].url).hostname);
-            } catch {}
+    const updateActiveTabInfo = () => {
+      if (typeof chrome !== 'undefined' && chrome.tabs) {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          if (tabs && tabs[0]) {
+            setCurrentTabId(tabs[0].id || null);
+            if (tabs[0].url) {
+              setCurrentUrl(tabs[0].url);
+              try {
+                setCurrentDomain(new URL(tabs[0].url).hostname);
+              } catch {}
+            }
           }
-        }
-      });
+        });
+      }
+    };
+
+    updateActiveTabInfo();
+
+    // Listen to tab activation/updates
+    if (typeof chrome !== 'undefined' && chrome.tabs) {
+      chrome.tabs.onActivated?.addListener(updateActiveTabInfo);
+      chrome.tabs.onUpdated?.addListener(updateActiveTabInfo);
     }
 
     // Load saved settings
@@ -97,20 +108,54 @@ export function SidePanelApp() {
     }
   }, []);
 
-  // Send message to active tab
+  // Send message to active tab with automatic script injection if needed
   const sendMessageToTab = async (action: string, payload?: any) => {
-    if (typeof chrome !== 'undefined' && chrome.tabs && currentTabId) {
-      return new Promise((resolve, reject) => {
-        chrome.tabs.sendMessage(currentTabId, { action, payload }, (res) => {
-          if (chrome.runtime.lastError) {
-            resolve({ simulated: true, action, payload });
-          } else if (res?.status === 'ERROR') {
-            reject(new Error(res.error));
-          } else {
-            resolve(res?.data);
-          }
-        });
-      });
+    if (typeof chrome !== 'undefined' && chrome.tabs) {
+      // Refresh current tab ID if missing
+      let targetTabId = currentTabId;
+      if (!targetTabId) {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tabs[0]?.id) {
+          targetTabId = tabs[0].id;
+          setCurrentTabId(targetTabId);
+        }
+      }
+
+      if (targetTabId) {
+        try {
+          return await new Promise((resolve, reject) => {
+            chrome.tabs.sendMessage(targetTabId!, { action, payload }, async (res) => {
+              if (chrome.runtime.lastError) {
+                // If content script was not yet injected into this tab, inject it on the fly
+                try {
+                  await chrome.scripting.executeScript({
+                    target: { tabId: targetTabId! },
+                    files: ['content.js']
+                  });
+                  // Retry message after injection
+                  chrome.tabs.sendMessage(targetTabId!, { action, payload }, (retryRes) => {
+                    if (chrome.runtime.lastError) {
+                      reject(new Error(chrome.runtime.lastError.message));
+                    } else if (retryRes?.status === 'ERROR') {
+                      reject(new Error(retryRes.error));
+                    } else {
+                      resolve(retryRes?.data);
+                    }
+                  });
+                } catch (injErr: any) {
+                  reject(new Error(`Failed to inject into tab: ${injErr.message}`));
+                }
+              } else if (res?.status === 'ERROR') {
+                reject(new Error(res.error));
+              } else {
+                resolve(res?.data);
+              }
+            });
+          });
+        } catch (e: any) {
+          throw e;
+        }
+      }
     }
     return { simulated: true, action, payload };
   };
@@ -161,6 +206,12 @@ export function SidePanelApp() {
         takeScreenshot: async () => ''
       });
 
+      if (!result.success) {
+        setLastError(result.summary || 'Task failed');
+      } else {
+        setLastError(null);
+      }
+
       if (result.data && Array.isArray(result.data)) {
         setExtractedData(result.data);
         const report = ScrapingEngine.validateDataset(
@@ -171,8 +222,9 @@ export function SidePanelApp() {
         );
         setValidationReport(report);
       }
-    } catch {
+    } catch (err: any) {
       setAgentState('FAILED');
+      setLastError(err.message || 'Unknown error occurred');
     }
   };
 
@@ -347,6 +399,25 @@ export function SidePanelApp() {
                 </button>
               )}
             </div>
+
+            {/* Error Banner */}
+            {lastError && (
+              <div className="p-2.5 rounded bg-destructive/10 border border-destructive text-destructive text-xs flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <div className="space-y-0.5 flex-1">
+                  <div className="font-semibold text-[11px]">Action Failed</div>
+                  <div className="text-[10px] leading-tight break-words">{lastError}</div>
+                  {!providerConfig.apiKey && (
+                    <button
+                      onClick={() => setActiveTab('settings')}
+                      className="text-[10px] text-foreground underline font-bold mt-1 block"
+                    >
+                      → Go to Config Tab to enter API Key
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Recent Live Actions */}
             <div className="space-y-1.5 pt-2">
