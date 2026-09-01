@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Play, Pause, Square, Shield, Settings as SettingsIcon, 
   Download, Terminal, RefreshCw, CheckCircle2, AlertTriangle, 
   Globe, Layers, AlertCircle, Database, BookOpen, Sparkles, 
-  ArrowRight, Compass, Bug, Zap, ExternalLink, ChevronRight, Check
+  ArrowRight, Compass, Bug, Zap, FileSpreadsheet, Upload, Check, 
+  FileText, Repeat, ListChecks, CheckSquare, XSquare, Plus
 } from 'lucide-react';
 import { AIProviderConfig, AIModelInfo } from '@/providers/types';
 import { AgentState, ActionLog, RiskLevel, ExtractionSchema } from '@/protocol/types';
@@ -14,9 +15,11 @@ import { registerDefaultBrowserTools } from '@/tools/browser-tools';
 import { PolicyEngine } from '@/policy/policy-engine';
 import { ScrapingEngine, ValidationReport } from '@/scraper/scraping-engine';
 import { ExportEngine } from '@/export/export-engine';
+import { SITEngine, SITTestCase } from '@/sit/sit-engine';
+import { FlowStudioEngine, DiscoveredFlow, WorkflowStep } from '@/sit/flow-studio';
 
 export function SidePanelApp() {
-  const [activeTab, setActiveTab] = useState<'agent' | 'explorer' | 'monkey' | 'extract' | 'audit' | 'settings' | 'guide'>('agent');
+  const [activeTab, setActiveTab] = useState<'agent' | 'sit' | 'explorer' | 'monkey' | 'extract' | 'audit' | 'settings' | 'guide'>('agent');
 
   // Provider Settings
   const [providerConfig, setProviderConfig] = useState<AIProviderConfig>({
@@ -41,6 +44,13 @@ export function SidePanelApp() {
   const [currentDomain, setCurrentDomain] = useState('example.com');
   const [currentTabId, setCurrentTabId] = useState<number | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
+
+  // SIT Runner State
+  const [sitCases, setSitCases] = useState<SITTestCase[]>([]);
+  const [isSitRunning, setIsSitRunning] = useState(false);
+  const [currentSitIndex, setCurrentSitIndex] = useState<number>(-1);
+  const [activeWorkflow, setActiveWorkflow] = useState<DiscoveredFlow | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Explorer State
   const [discoveredMenus, setDiscoveredMenus] = useState<Array<{ ref: string; label: string; tag: string; isSubmenu: boolean }>>([]);
@@ -229,11 +239,98 @@ export function SidePanelApp() {
     }
   };
 
+  // SIT File Import Handler
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const parsed = await SITEngine.parseTestFile(file);
+      if (parsed.testCases.length > 0) {
+        setSitCases(parsed.testCases);
+        setLastError(null);
+      } else {
+        setLastError('File tidak memiliki test cases yang dapat diparse.');
+      }
+    } catch (err: any) {
+      setLastError(`Gagal memproses file SIT: ${err.message}`);
+    }
+  };
+
+  // Run SIT Test Suite via Autonomous Agent
+  const handleRunSITSuite = async () => {
+    if (sitCases.length === 0 || !runtime) return;
+
+    setIsSitRunning(true);
+    setAgentState('EXECUTING');
+
+    const updatedCases = [...sitCases];
+
+    for (let i = 0; i < updatedCases.length; i++) {
+      setCurrentSitIndex(i);
+      const tc = updatedCases[i];
+      tc.result = 'PENDING';
+
+      try {
+        const stepPrompt = `Jalankan skenario uji: ${tc.testScript}. Ekspektasi: ${tc.outputExpected}. Pastikan tidak ada error/anomali.`;
+        const res = await runtime.runTask(providerConfig, {
+          taskId: `sit_${tc.no}_${Date.now()}`,
+          userPrompt: stepPrompt,
+          tabId: currentTabId || 1,
+          url: currentUrl,
+          domain: currentDomain,
+          maxSteps: 6,
+          onStateChange: () => {},
+          onPlanCreated: () => {},
+          onStepProgress: () => {},
+          onActionLog: (log) => setActionLogs((prev) => [log, ...prev]),
+          onRequestHumanTakeover: () => Promise.resolve(true),
+          onRequestConfirmation: () => Promise.resolve(true),
+          sendMessageToTab
+        });
+
+        if (res.success) {
+          tc.result = 'V';
+          tc.notes = res.summary;
+        } else {
+          tc.result = 'X';
+          tc.findingType = 'Major';
+          tc.notes = res.summary || 'Aksi gagal dieksekusi';
+        }
+      } catch (err: any) {
+        tc.result = 'X';
+        tc.findingType = 'Major';
+        tc.notes = err.message;
+      }
+
+      setSitCases([...updatedCases]);
+      await new Promise(r => setTimeout(r, 600));
+    }
+
+    setIsSitRunning(false);
+    setCurrentSitIndex(-1);
+    setAgentState('COMPLETED');
+  };
+
+  const handleExportSITExcel = () => {
+    if (sitCases.length === 0) return;
+    const blob = SITEngine.generateSITExcel(sitCases, {
+      projectName: currentDomain,
+      tester: 'Browser Agent Bridge Automation'
+    });
+    ExportEngine.downloadBlob(blob, `SIT-Report-${currentDomain}-${new Date().toISOString().split('T')[0]}.xlsx`);
+  };
+
   const handleExploreMenus = async () => {
     setIsExploring(true);
     try {
       const res = await sendMessageToTab('EXPLORE_MENUS', {}) as any[];
-      setDiscoveredMenus(Array.isArray(res) ? res : []);
+      const menus = Array.isArray(res) ? res : [];
+      setDiscoveredMenus(menus);
+      if (menus.length > 0) {
+        const flow = FlowStudioEngine.menusToTourFlow(menus);
+        setActiveWorkflow(flow);
+      }
     } catch (e: any) {
       setLastError(e.message);
     } finally {
@@ -247,6 +344,10 @@ export function SidePanelApp() {
     try {
       const res = await sendMessageToTab('RUN_MONKEY_TEST', { iterations: 20, delayMs: 200 }) as any;
       setMonkeyResult(res);
+      if (res && res.actions) {
+        const flow = FlowStudioEngine.traceToWorkflow(`Monkey Flow ${new Date().toLocaleTimeString()}`, currentUrl, res.actions);
+        setActiveWorkflow(flow);
+      }
     } catch (e: any) {
       setLastError(e.message);
     } finally {
@@ -327,15 +428,23 @@ export function SidePanelApp() {
       <nav className="flex border-b border-border bg-[#131B2E] text-xs overflow-x-auto">
         <button
           onClick={() => setActiveTab('agent')}
-          className={`flex-1 min-w-[70px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
+          className={`flex-1 min-w-[65px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
             activeTab === 'agent' ? 'border-primary text-foreground bg-card' : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
           <Terminal className="w-3.5 h-3.5 text-primary" /> Agent
         </button>
         <button
+          onClick={() => setActiveTab('sit')}
+          className={`flex-1 min-w-[65px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
+            activeTab === 'sit' ? 'border-primary text-foreground bg-card' : 'border-transparent text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <FileSpreadsheet className="w-3.5 h-3.5 text-green-400" /> SIT QA
+        </button>
+        <button
           onClick={() => setActiveTab('explorer')}
-          className={`flex-1 min-w-[75px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
+          className={`flex-1 min-w-[70px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
             activeTab === 'explorer' ? 'border-primary text-foreground bg-card' : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
@@ -343,7 +452,7 @@ export function SidePanelApp() {
         </button>
         <button
           onClick={() => setActiveTab('monkey')}
-          className={`flex-1 min-w-[75px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
+          className={`flex-1 min-w-[70px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
             activeTab === 'monkey' ? 'border-primary text-foreground bg-card' : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
@@ -351,7 +460,7 @@ export function SidePanelApp() {
         </button>
         <button
           onClick={() => setActiveTab('extract')}
-          className={`flex-1 min-w-[75px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
+          className={`flex-1 min-w-[70px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
             activeTab === 'extract' ? 'border-primary text-foreground bg-card' : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
@@ -359,7 +468,7 @@ export function SidePanelApp() {
         </button>
         <button
           onClick={() => setActiveTab('audit')}
-          className={`flex-1 min-w-[70px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
+          className={`flex-1 min-w-[65px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
             activeTab === 'audit' ? 'border-primary text-foreground bg-card' : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
@@ -367,7 +476,7 @@ export function SidePanelApp() {
         </button>
         <button
           onClick={() => setActiveTab('settings')}
-          className={`flex-1 min-w-[70px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
+          className={`flex-1 min-w-[65px] py-2 text-center font-medium border-b-2 transition-colors flex items-center justify-center gap-1 ${
             activeTab === 'settings' ? 'border-primary text-foreground bg-card' : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
@@ -513,7 +622,87 @@ export function SidePanelApp() {
           </div>
         )}
 
-        {/* Tab 2: Menu Explorer & Discovery */}
+        {/* Tab 2: SIT QA Suite (File Upload, Auto Execution, Excel Export) */}
+        {activeTab === 'sit' && (
+          <div className="space-y-3">
+            <div className="p-3 rounded bg-card border border-border space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-green-400 font-semibold">
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span>SIT Automated QA Runner</span>
+                </div>
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="px-2 py-1 bg-primary/20 hover:bg-primary text-primary hover:text-white rounded text-[11px] flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <Upload className="w-3 h-3" /> Upload SIT (.xlsx/.json/.txt)
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx,.xls,.csv,.json,.txt"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+              </div>
+              <p className="text-muted-foreground text-[11px]">
+                Import dokumen SIT Excel / skenario uji Anda, Agent akan mengeksekusi step-by-step otomatis dan mengekspor kembali Workbook Excel standar QA (*V* pass / *X* bug).
+              </p>
+
+              {sitCases.length > 0 && (
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={handleRunSITSuite}
+                    disabled={isSitRunning}
+                    className="flex-1 bg-accent hover:bg-green-600 disabled:opacity-50 text-background font-bold py-1.5 rounded text-xs transition-colors cursor-pointer flex items-center justify-center gap-1"
+                  >
+                    <Play className="w-3.5 h-3.5" />
+                    {isSitRunning ? `Running Case ${currentSitIndex + 1}/${sitCases.length}...` : `Run All ${sitCases.length} SIT Cases`}
+                  </button>
+                  <button
+                    onClick={handleExportSITExcel}
+                    className="px-3 bg-primary hover:bg-primary-hover text-white font-medium py-1.5 rounded text-xs transition-colors cursor-pointer flex items-center gap-1"
+                  >
+                    <Download className="w-3.5 h-3.5" /> Export SIT .xlsx
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {sitCases.length === 0 ? (
+              <div className="text-center py-8 text-xs text-muted-foreground border border-dashed border-border rounded bg-card/30 space-y-2">
+                <Upload className="w-6 h-6 mx-auto opacity-40" />
+                <p>Upload file SIT Excel / Test Cases untuk memulai pengujian otomatis berurutan.</p>
+              </div>
+            ) : (
+              <div className="space-y-1.5 max-h-80 overflow-y-auto">
+                {sitCases.map((tc, idx) => (
+                  <div
+                    key={idx}
+                    className={`p-2.5 rounded bg-card border text-xs space-y-1 transition-colors ${
+                      currentSitIndex === idx ? 'border-primary shadow-md bg-[#131B2E]' : 'border-border'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-[10px] text-muted-foreground font-bold">{tc.no} - {tc.functionName}</span>
+                      <span className={`px-1.5 py-0.5 rounded font-mono font-bold text-[9px] ${
+                        tc.result === 'V' ? 'bg-accent/20 text-accent' :
+                        tc.result === 'X' ? 'bg-destructive/20 text-destructive' : 'bg-muted text-muted-foreground'
+                      }`}>
+                        {tc.result === 'V' ? '✓ PASS' : tc.result === 'X' ? '✗ BUG' : 'PENDING'}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-foreground font-medium">{tc.testScript}</div>
+                    <div className="text-[10px] text-muted-foreground">Ekspektasi: {tc.outputExpected}</div>
+                    {tc.notes && <div className="text-[10px] text-primary/80 font-mono">Catatan: {tc.notes}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 3: Menu Explorer & Discovery */}
         {activeTab === 'explorer' && (
           <div className="space-y-3">
             <div className="flex justify-between items-center">
@@ -559,7 +748,7 @@ export function SidePanelApp() {
           </div>
         )}
 
-        {/* Tab 3: Monkey QA Stress Test */}
+        {/* Tab 4: Monkey QA Stress Test */}
         {activeTab === 'monkey' && (
           <div className="space-y-3">
             <div className="p-3 rounded bg-card border border-border space-y-2 text-xs">
@@ -610,7 +799,7 @@ export function SidePanelApp() {
           </div>
         )}
 
-        {/* Tab 4: Scraping & Dataset */}
+        {/* Tab 5: Scraping & Dataset */}
         {activeTab === 'extract' && (
           <div className="space-y-3">
             <div className="flex justify-between items-center">
@@ -694,7 +883,7 @@ export function SidePanelApp() {
           </div>
         )}
 
-        {/* Tab 5: Audit Timeline */}
+        {/* Tab 6: Audit Timeline */}
         {activeTab === 'audit' && (
           <div className="space-y-2">
             <div className="flex justify-between items-center">
@@ -735,7 +924,7 @@ export function SidePanelApp() {
           </div>
         )}
 
-        {/* Tab 6: Provider & Security Settings */}
+        {/* Tab 7: Provider & Security Settings */}
         {activeTab === 'settings' && (
           <div className="space-y-3 text-xs">
             <div className="space-y-1">
@@ -836,16 +1025,16 @@ export function SidePanelApp() {
           </div>
         )}
 
-        {/* Tab 7: User Guide & Documentation */}
+        {/* Tab 8: User Guide & Documentation */}
         {activeTab === 'guide' && (
           <div className="space-y-3 text-xs leading-relaxed">
             <div className="p-3 rounded bg-card border border-border space-y-2">
               <h3 className="font-semibold text-sm text-foreground flex items-center gap-1.5">
                 <BookOpen className="w-4 h-4 text-primary" />
-                Panduan Otomatisasi Mandiri
+                Panduan Otomatisasi & SIT Testing
               </h3>
               <p className="text-muted-foreground text-[11px]">
-                Ekstensi ini bertindak sebagai asisten otomatisasi yang langsung mengendalikan browser seperti di CLI/OpenCode tanpa membagikan credential rahasia.
+                Browser Agent Bridge mendukung eksekusi otomatis penuh untuk pengujian System Integration Testing (SIT), Monkey Testing, dan Ekstraksi Data.
               </p>
             </div>
 
@@ -853,30 +1042,30 @@ export function SidePanelApp() {
               <div className="p-2.5 rounded bg-card border border-border space-y-1">
                 <div className="font-semibold text-foreground flex items-center gap-1.5">
                   <span className="w-4 h-4 rounded-full bg-primary/20 text-primary flex items-center justify-center text-[10px] font-mono font-bold">1</span>
-                  Ketik Instruksi Bebas
+                  SIT Test Runner Otomatis
                 </div>
                 <p className="text-muted-foreground text-[11px] pl-5">
-                  Ketik apa saja di tab <strong>Agent</strong> (contoh: "Masuk ke menu comsec lalu klik sub-menu laporan").
+                  Upload file Excel / JSON skenario pengujian di tab <strong>SIT QA</strong>. Klik "Run All Cases" untuk menjalankan test secara sekuensial dan download kembali laporannya dalam format Excel (*V* pass / *X* bug).
                 </p>
               </div>
 
               <div className="p-2.5 rounded bg-card border border-border space-y-1">
                 <div className="font-semibold text-foreground flex items-center gap-1.5">
                   <span className="w-4 h-4 rounded-full bg-primary/20 text-primary flex items-center justify-center text-[10px] font-mono font-bold">2</span>
-                  Menu Explorer & Discovery
+                  Menu Auto-Discovery & Tour Flow
                 </div>
                 <p className="text-muted-foreground text-[11px] pl-5">
-                  Gunakan tab <strong>Explore</strong> untuk memindai semua navigasi sidebar/navbar secara instan dalam satu klik.
+                  Buka tab <strong>Explore</strong> untuk memindai struktur menu sidebar dan navbar aplikasi web target dalam sekali klik.
                 </p>
               </div>
 
               <div className="p-2.5 rounded bg-card border border-border space-y-1">
                 <div className="font-semibold text-foreground flex items-center gap-1.5">
                   <span className="w-4 h-4 rounded-full bg-primary/20 text-primary flex items-center justify-center text-[10px] font-mono font-bold">3</span>
-                  Monkey Chaos QA Testing
+                  Monkey Chaos Test
                 </div>
                 <p className="text-muted-foreground text-[11px] pl-5">
-                  Tab <strong>Monkey</strong> menjalankan pengujian chaos klik acak dan otomatis mendeteksi error console JS pada website target.
+                  Gunakan tab <strong>Monkey</strong> untuk menjalankan stress testing acak guna menemukan error unhandled JavaScript console atau page crashes.
                 </p>
               </div>
             </div>
