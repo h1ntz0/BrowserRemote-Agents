@@ -12,10 +12,17 @@ const policyEngine = new PolicyEngine();
 const providerManager = new ProviderManager();
 const agentRuntime = new AgentRuntime(providerManager, toolRegistry, policyEngine);
 
-// Open sidepanel when extension icon clicked
+// Configure side panel behavior on installation
+chrome.runtime.onInstalled.addListener(() => {
+  if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
+    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+  }
+});
+
+// Fallback click listener
 chrome.action.onClicked.addListener(tab => {
-  if (tab.id) {
-    (chrome.sidePanel as any).open({ tabId: tab.id });
+  if (tab.id && chrome.sidePanel && (chrome.sidePanel as any).open) {
+    (chrome.sidePanel as any).open({ tabId: tab.id }).catch(() => {});
   }
 });
 
