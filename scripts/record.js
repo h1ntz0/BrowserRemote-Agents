@@ -42,7 +42,7 @@ async function recordWalkthrough() {
   console.log('Step 2: Config');
   await page.locator('button:has-text("Config")').click();
   await snap(10);
-  await page.locator('input[type="password"]').fill('sk-proj-demo-api-key-sample');
+  await page.locator('input[type="password"]').fill(process.env.RECORD_DEMO_API_KEY || 'YOUR_API_KEY_HERE');
   await snap(10);
   await page.locator('button:has-text("Test Connection")').click();
   await snap(16);

@@ -315,9 +315,9 @@ export function SidePanelApp() {
     setAgentState('COMPLETED');
   };
 
-  const handleExportSITExcel = () => {
+  const handleExportSITExcel = async () => {
     if (sitCases.length === 0) return;
-    const blob = SITEngine.generateSITExcel(sitCases, {
+    const blob = await SITEngine.generateSITExcel(sitCases, {
       projectName: currentDomain,
       tester: 'Browser Agent Bridge Automation'
     });

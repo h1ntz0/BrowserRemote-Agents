@@ -22,8 +22,8 @@ describe('SIT Engine & Flow Studio', () => {
     }
   ];
 
-  it('generates a valid multi-sheet SIT Excel Workbook blob', () => {
-    const blob = SITEngine.generateSITExcel(sampleCases, {
+  it('generates a valid multi-sheet SIT Excel Workbook blob', async () => {
+    const blob = await SITEngine.generateSITExcel(sampleCases, {
       projectName: 'Advantage SCM Core',
       tester: 'QA Automation Bot'
     });

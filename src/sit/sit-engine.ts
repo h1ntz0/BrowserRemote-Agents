@@ -1,4 +1,4 @@
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 
 export interface SITTestCase {
   no: string;
@@ -66,11 +66,16 @@ export class SITEngine {
     }
 
     // Excel & CSV parsing
-    const buffer = await file.arrayBuffer();
-    const workbook = XLSX.read(buffer, { type: 'array' });
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][];
+    let rawData: any[][];
+    if (ext === 'csv') {
+      rawData = SITEngine.parseCsvText(await file.text());
+    } else {
+      const buffer = await file.arrayBuffer();
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(buffer);
+      const sheet = workbook.worksheets[0];
+      rawData = sheet ? SITEngine.worksheetToArray(sheet) : [];
+    }
 
     const testCases: SITTestCase[] = [];
     let headerRowIndex = -1;
@@ -137,11 +142,11 @@ export class SITEngine {
   /**
    * Export execution results to official Standard Corporate SIT Excel Workbook (.xlsx)
    */
-  public static generateSITExcel(
+  public static async generateSITExcel(
     testCases: SITTestCase[],
     meta: Partial<SITReportMeta> = {}
-  ): Blob {
-    const wb = XLSX.utils.book_new();
+  ): Promise<Blob> {
+    const wb = new ExcelJS.Workbook();
 
     const projectName = meta.projectName || 'Web Application System';
     const tester = meta.tester || 'QA Automation Specialist';
@@ -166,8 +171,8 @@ export class SITEngine {
       ]);
     });
 
-    const wsHappy = XLSX.utils.aoa_to_sheet(happyRows);
-    XLSX.utils.book_append_sheet(wb, wsHappy, 'Happy Test');
+    const wsHappy = wb.addWorksheet('Happy Test');
+    wsHappy.addRows(happyRows);
 
     // Sheet 2: Negative / Bug Findings
     const bugCases = testCases.filter(tc => tc.result === 'X');
@@ -187,10 +192,69 @@ export class SITEngine {
       ]);
     });
 
-    const wsNegative = XLSX.utils.aoa_to_sheet(bugRows);
-    XLSX.utils.book_append_sheet(wb, wsNegative, 'Negative & Bug Test');
+    const wsNegative = wb.addWorksheet('Negative & Bug Test');
+    wsNegative.addRows(bugRows);
 
-    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const wbout = await wb.xlsx.writeBuffer();
     return new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+
+  /**
+   * Convert an ExcelJS worksheet into an array-of-arrays — the same shape the
+   * previous SheetJS `sheet_to_json(sheet, { header: 1 })` call produced.
+   */
+  private static worksheetToArray(sheet: ExcelJS.Worksheet): any[][] {
+    const rows: any[][] = [];
+    sheet.eachRow({ includeEmpty: false }, (row) => {
+      const values = (row.values as any[]).slice(1).map(v => SITEngine.normalizeCellValue(v));
+      rows.push(values);
+    });
+    return rows;
+  }
+
+  private static normalizeCellValue(value: any): any {
+    if (value === null || value === undefined) return undefined;
+    if (value instanceof Date) return value;
+    if (typeof value === 'object') {
+      if (Array.isArray(value.richText)) {
+        return value.richText.map((part: any) => part.text ?? '').join('');
+      }
+      if (typeof value.text === 'string') return value.text; // hyperlink cell
+      if ('result' in value) return SITEngine.normalizeCellValue(value.result); // formula cell
+      if ('error' in value) return undefined;
+    }
+    return value;
+  }
+
+  /**
+   * Minimal CSV parser (comma or semicolon delimited, quoted fields supported)
+   * covering the CSV support SheetJS previously provided.
+   */
+  private static parseCsvText(text: string): any[][] {
+    const src = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const firstLine = src.split('\n')[0] || '';
+    const delimiter = firstLine.split(';').length > firstLine.split(',').length ? ';' : ',';
+    const rows: any[][] = [];
+    let row: string[] = [];
+    let field = '';
+    let inQuotes = false;
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (src[i + 1] === '"') { field += '"'; i++; }
+          else inQuotes = false;
+        } else field += ch;
+      } else if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === delimiter) {
+        row.push(field); field = '';
+      } else if (ch === '\n') {
+        row.push(field); field = '';
+        rows.push(row); row = [];
+      } else field += ch;
+    }
+    if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+    return rows.filter(r => r.length > 0);
   }
 }
