@@ -59,7 +59,7 @@ export const RequestMessageSchema = z.object({
   schemaVersion: z.literal('1.0.0'),
   source: z.enum(['SIDEPANEL', 'BACKGROUND', 'CONTENT', 'AGENT']),
   action: BrowserActionTypeSchema,
-  payload: z.record(z.any()).default({})
+  payload: z.record(z.string(), z.any()).default({})
 });
 export type RequestMessage = z.infer<typeof RequestMessageSchema>;
 
